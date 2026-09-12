@@ -1,94 +1,70 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const mongoose = require('mongoose');
 
-const dbPath = path.resolve(__dirname, 'database.sqlite');
-const db = new sqlite3.Database(dbPath, (err) => {
-    if (err) {
-        console.error('Error opening database', err.message);
-    } else {
-        console.log('Connected to the SQLite database.');
-        // Create tables if they don't exist
-        db.serialize(() => {
-            db.run(`CREATE TABLE IF NOT EXISTS separators (
-                channel_id TEXT PRIMARY KEY,
-                separator_url TEXT,
-                last_message_id TEXT
-            )`);
-            db.run(`CREATE TABLE IF NOT EXISTS reactions (
-                channel_id TEXT PRIMARY KEY,
-                emoji TEXT
-            )`);
-        });
-    }
+// Connect to MongoDB
+if (!process.env.MONGO_URI) {
+    console.error('Error: MONGO_URI is not set in environment variables!');
+} else {
+    mongoose.connect(process.env.MONGO_URI).then(() => {
+        console.log('Connected to MongoDB database.');
+    }).catch((err) => {
+        console.error('Error connecting to MongoDB:', err.message);
+    });
+}
+
+// Define Schemas and Models
+const SeparatorSchema = new mongoose.Schema({
+    channel_id: { type: String, required: true, unique: true },
+    separator_url: String,
+    last_message_id: String
 });
 
+const ReactionSchema = new mongoose.Schema({
+    channel_id: { type: String, required: true, unique: true },
+    emoji: String
+});
+
+const Separator = mongoose.model('Separator', SeparatorSchema);
+const Reaction = mongoose.model('Reaction', ReactionSchema);
+
 // Helper functions for Separators
-function getSeparator(channelId) {
-    return new Promise((resolve, reject) => {
-        db.get(`SELECT separator_url, last_message_id FROM separators WHERE channel_id = ?`, [channelId], (err, row) => {
-            if (err) reject(err);
-            else resolve(row);
-        });
-    });
+async function getSeparator(channelId) {
+    return await Separator.findOne({ channel_id: channelId });
 }
 
-function setSeparator(channelId, separatorUrl) {
-    return new Promise((resolve, reject) => {
-        db.run(`INSERT INTO separators (channel_id, separator_url) VALUES (?, ?)
-                ON CONFLICT(channel_id) DO UPDATE SET separator_url = excluded.separator_url`, 
-                [channelId, separatorUrl], (err) => {
-            if (err) reject(err);
-            else resolve();
-        });
-    });
+async function setSeparator(channelId, separatorUrl) {
+    await Separator.findOneAndUpdate(
+        { channel_id: channelId },
+        { separator_url: separatorUrl },
+        { upsert: true, new: true }
+    );
 }
 
-function removeSeparator(channelId) {
-    return new Promise((resolve, reject) => {
-        db.run(`DELETE FROM separators WHERE channel_id = ?`, [channelId], (err) => {
-            if (err) reject(err);
-            else resolve();
-        });
-    });
+async function removeSeparator(channelId) {
+    await Separator.deleteOne({ channel_id: channelId });
 }
 
-function setLastSeparatorMessage(channelId, messageId) {
-    return new Promise((resolve, reject) => {
-        db.run(`UPDATE separators SET last_message_id = ? WHERE channel_id = ?`, [messageId, channelId], (err) => {
-            if (err) reject(err);
-            else resolve();
-        });
-    });
+async function setLastSeparatorMessage(channelId, messageId) {
+    await Separator.updateOne(
+        { channel_id: channelId },
+        { last_message_id: messageId }
+    );
 }
 
 // Helper functions for Reactions
-function getReaction(channelId) {
-    return new Promise((resolve, reject) => {
-        db.get(`SELECT emoji FROM reactions WHERE channel_id = ?`, [channelId], (err, row) => {
-            if (err) reject(err);
-            else resolve(row);
-        });
-    });
+async function getReaction(channelId) {
+    return await Reaction.findOne({ channel_id: channelId });
 }
 
-function setReaction(channelId, emoji) {
-    return new Promise((resolve, reject) => {
-        db.run(`INSERT INTO reactions (channel_id, emoji) VALUES (?, ?)
-                ON CONFLICT(channel_id) DO UPDATE SET emoji = excluded.emoji`, 
-                [channelId, emoji], (err) => {
-            if (err) reject(err);
-            else resolve();
-        });
-    });
+async function setReaction(channelId, emoji) {
+    await Reaction.findOneAndUpdate(
+        { channel_id: channelId },
+        { emoji: emoji },
+        { upsert: true, new: true }
+    );
 }
 
-function removeReaction(channelId) {
-    return new Promise((resolve, reject) => {
-        db.run(`DELETE FROM reactions WHERE channel_id = ?`, [channelId], (err) => {
-            if (err) reject(err);
-            else resolve();
-        });
-    });
+async function removeReaction(channelId) {
+    await Reaction.deleteOne({ channel_id: channelId });
 }
 
 module.exports = {
