@@ -278,8 +278,162 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
+const PREFIX = process.env.PREFIX || '-';
+
+function isAdminChannel(message) {
+    if (process.env.ADMIN_CHANNEL_ID && message.channel.id !== process.env.ADMIN_CHANNEL_ID) {
+        return false;
+    }
+    return true;
+}
+
+async function handlePrefixCommand(message) {
+    if (!isAdminChannel(message)) {
+        return message.reply('عذراً، لا يمكنك استخدام أوامر التحكم إلا في الشات المخصص لها.');
+    }
+
+    if (message.commandName === 'help' || message.commandName === 'مساعدة') {
+        return message.reply(
+            '**قائمة الأوامر:**\n' +
+            `- \`${PREFIX}setup-separator #شات [رابط الصورة]\` - إعداد الفاصل (أو ارفع الصورة مع الرسالة)\n` +
+            `- \`${PREFIX}stop-separator #شات\` - إيقاف الفاصل\n` +
+            `- \`${PREFIX}setup-reaction #شات الإيموجي\` - رياكشن تلقائي (تفصل بين الإيموجيات بمسافة)\n` +
+            `- \`${PREFIX}stop-reaction #شات\` - إيقاف الرياكشن\n` +
+            `- \`${PREFIX}auto-delete <المدة بالدقائق> #شات1 #شات2 ...\` - حذف تلقائي للرسائل بعد المدة\n` +
+            `- \`${PREFIX}stop-auto-delete #شات1 #شات2 ...\` - إيقاف الحذف التلقائي\n` +
+            `- \`${PREFIX}help\` - عرض هذه القائمة`
+        );
+    }
+
+    if (message.commandName === 'setup-separator') {
+        const channel = message.mentions.channels.first();
+        if (!channel) return message.reply('يجب أن تذكر الشات: `-setup separator #شات [رابط]`');
+
+        let finalUrl = null;
+        const attachment = message.attachments.first();
+        if (attachment) {
+            finalUrl = attachment.url;
+        } else if (message.args.length > 0) {
+            finalUrl = message.args[0];
+        }
+
+        if (!finalUrl) {
+            return message.reply('يجب عليك إما وضع رابط الصورة أو رفع صورة مع الأمر!');
+        }
+
+        const isFullUrl = /^https?:\/\//i.test(finalUrl);
+        const isExistingFile = fs.existsSync(path.join(__dirname, finalUrl));
+        if (!isFullUrl && !isExistingFile) {
+            return message.reply('القيمة المُدخلة ليست رابط صورة صحيح ولا ملف موجود في المشروع. ارفع الصورة مع الأمر أو ضع رابطاً كاملاً يبدأ بـ https://');
+        }
+
+        try {
+            await db.setSeparator(channel.id, finalUrl);
+            return message.reply(`تم إعداد الفاصل بنجاح في شات ${channel}`);
+        } catch (error) {
+            console.error(error);
+            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
+        }
+    }
+
+    if (message.commandName === 'stop-separator') {
+        const channel = message.mentions.channels.first();
+        if (!channel) return message.reply('يجب أن تذكر الشات: `-stop separator #شات`');
+        try {
+            await db.removeSeparator(channel.id);
+            return message.reply(`تم إيقاف الفاصل في شات ${channel}`);
+        } catch (error) {
+            console.error(error);
+            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
+        }
+    }
+
+    if (message.commandName === 'setup-reaction') {
+        const channel = message.mentions.channels.first();
+        const emoji = message.args.join(' ');
+        if (!channel) return message.reply('يجب أن تذكر الشات: `-setup reaction #شات الإيموجي`');
+        if (!emoji) return message.reply('يجب وضع الإيموجي بعد الشات');
+        try {
+            await db.setReaction(channel.id, emoji);
+            return message.reply(`تم إعداد الرياكشن التلقائي ${emoji} في شات ${channel}`);
+        } catch (error) {
+            console.error(error);
+            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
+        }
+    }
+
+    if (message.commandName === 'stop-reaction') {
+        const channel = message.mentions.channels.first();
+        if (!channel) return message.reply('يجب أن تذكر الشات: `-stop reaction #شات`');
+        try {
+            await db.removeReaction(channel.id);
+            return message.reply(`تم إيقاف الرياكشن التلقائي في شات ${channel}`);
+        } catch (error) {
+            console.error(error);
+            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
+        }
+    }
+
+    if (message.commandName === 'auto-delete' || message.commandName === 'auto delete') {
+        const duration = parseInt(message.args[0], 10);
+        if (isNaN(duration) || duration < 1) {
+            return message.reply('يجب وضع المدة أولاً بالدقائق: `-auto delete 5 #شات1 #شات2`');
+        }
+        const channels = message.mentions.channels;
+        if (channels.size === 0) {
+            return message.reply('يجب أن تذكر روم واحد على الأقل: `-auto delete 5 #شات1 #شات2`');
+        }
+        try {
+            for (const ch of channels.values()) {
+                await db.setAutoDelete(ch.id, duration);
+            }
+            return message.reply(`تم تفعيل الحذف التلقائي لـ ${channels.size} روم، الرسائل تُحذف بعد ${duration} دقيقة.\nالرومات: ${channels.map(c => c).join(' ')}`);
+        } catch (error) {
+            console.error(error);
+            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
+        }
+    }
+
+    if (message.commandName === 'stop-auto-delete') {
+        const channels = message.mentions.channels;
+        if (channels.size === 0) {
+            return message.reply('يجب أن تذكر روم واحد على الأقل: `-stop-auto-delete #شات1 #شات2`');
+        }
+        try {
+            for (const ch of channels.values()) {
+                await db.removeAutoDelete(ch.id);
+            }
+            return message.reply(`تم إيقاف الحذف التلقائي لـ ${channels.size} روم: ${channels.map(c => c).join(' ')}`);
+        } catch (error) {
+            console.error(error);
+            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
+        }
+    }
+
+    return message.reply(`أمر غير معروف. اكتب \`${PREFIX}help\` لعرض الأوامر.`);
+}
+
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
+
+    if (message.content.startsWith(PREFIX)) {
+        const content = message.content.slice(PREFIX.length).trim();
+        const args = content.split(/\s+/).filter(a => a !== '');
+        let commandName = args.shift().toLowerCase();
+
+        const subMap = {
+            'auto': { 'delete': 'auto-delete', 'stop': 'stop-auto-delete' },
+            'setup': { 'separator': 'setup-separator', 'reaction': 'setup-reaction' },
+            'stop': { 'separator': 'stop-separator', 'reaction': 'stop-reaction' }
+        };
+        if (subMap[commandName] && subMap[commandName][args[0]]) {
+            commandName = subMap[commandName][args.shift()];
+        }
+
+        message.commandName = commandName;
+        message.args = args;
+        await handlePrefixCommand(message);
+    }
 
     // Check Auto Reaction
     try {
