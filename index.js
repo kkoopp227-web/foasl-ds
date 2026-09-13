@@ -6,7 +6,11 @@ const port = process.env.PORT || 3000;
 app.get('/', (req, res) => res.send('Bot is running!'));
 app.listen(port, () => console.log(`Dummy server listening at http://localhost:${port}`));
 
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, PermissionsBitField, EmbedBuilder } = require('discord.js');
+const {
+    Client, GatewayIntentBits, EmbedBuilder, REST, Routes,
+    ChannelSelectMenuBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
+    ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType
+} = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const db = require('./database');
@@ -19,133 +23,134 @@ const client = new Client({
     ],
 });
 
-const commands = [
-    new SlashCommandBuilder()
-        .setName('setup-separator')
-        .setDescription('إعداد الفاصل لشات معين')
-        .addChannelOption(option => 
-            option.setName('channel')
-                .setDescription('الشات الذي سيتم إرسال الفاصل فيه')
-                .setRequired(true))
-        .addStringOption(option => 
-            option.setName('url')
-                .setDescription('رابط صورة الفاصل')
-                .setRequired(false))
-        .addAttachmentOption(option =>
-            option.setName('image')
-                .setDescription('رفع صورة للفاصل')
-                .setRequired(false))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+const PREFIX = process.env.PREFIX || '-';
 
-    new SlashCommandBuilder()
-        .setName('stop-separator')
-        .setDescription('إيقاف الفاصل في شات معين')
-        .addChannelOption(option => 
-            option.setName('channel')
-                .setDescription('الشات')
-                .setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+function isAdminChannel(channelId) {
+    if (process.env.ADMIN_CHANNEL_ID && channelId !== process.env.ADMIN_CHANNEL_ID) {
+        return false;
+    }
+    return true;
+}
 
-    new SlashCommandBuilder()
-        .setName('setup-reaction')
-        .setDescription('إعداد التفاعل التلقائي (الرياكشن) لشات معين')
-        .addChannelOption(option => 
-            option.setName('channel')
-                .setDescription('الشات')
-                .setRequired(true))
-        .addStringOption(option => 
-            option.setName('emoji')
-                .setDescription('الإيموجي (يمكنك وضع أكثر من إيموجي بينهم مسافة، مثل: 👍 ❤️)')
-                .setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+// ---------- Interactive panel state (key: user id) ----------
+const panels = new Map(); // userId -> { type, channels:Set, duration:number|null, src:string|null }
 
-    new SlashCommandBuilder()
-        .setName('stop-reaction')
-        .setDescription('إيقاف التفاعل التلقائي في شات معين')
-        .addChannelOption(option => 
-            option.setName('channel')
-                .setDescription('الشات')
-                .setRequired(true))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+function panelEmbed(state) {
+    const embed = new EmbedBuilder().setColor('#2b2d31');
 
-    new SlashCommandBuilder()
-        .setName('auto-delete')
-        .setDescription('إعداد الحذف التلقائي لرسائل الرومات')
-        .addChannelOption(option => 
-            option.setName('channel1')
-                .setDescription('الشات الأول')
-                .setRequired(true))
-        .addChannelOption(option => 
-            option.setName('channel2')
-                .setDescription('الشات الثاني (اختياري)')
-                .setRequired(false))
-        .addChannelOption(option => 
-            option.setName('channel3')
-                .setDescription('الشات الثالث (اختياري)')
-                .setRequired(false))
-        .addChannelOption(option => 
-            option.setName('channel4')
-                .setDescription('الشات الرابع (اختياري)')
-                .setRequired(false))
-        .addChannelOption(option => 
-            option.setName('channel5')
-                .setDescription('الشات الخامس (اختياري)')
-                .setRequired(false))
-        .addIntegerOption(option => 
-            option.setName('duration')
-                .setDescription('المدة بالدقائق قبل حذف الرسائل')
-                .setRequired(true)
-                .setMinValue(1))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+    if (state.type === 'auto-delete') {
+        embed.setTitle('إعداد الحذف التلقائي');
+        embed.setDescription(
+            '1- اختر الرومات من القائمة أدناه.\n' +
+            '2- اضغط زر «المدة» واكتب الوقت بالدقائق.\n' +
+            '3- اضغط «تشغيل» لتطبيق الإعداد.'
+        );
+    } else {
+        embed.setTitle('إعداد الفاصل');
+        embed.setDescription(
+            '1- اختر الرومات من القائمة أدناه.\n' +
+            '2- اضغط «تشغيل» لتطبيق الفاصل على الرومات المحددة.'
+        );
+    }
 
-    new SlashCommandBuilder()
-        .setName('stop-auto-delete')
-        .setDescription('إيقاف الحذف التلقائي لرسائل الرومات')
-        .addChannelOption(option => 
-            option.setName('channel1')
-                .setDescription('الشات الأول')
-                .setRequired(true))
-        .addChannelOption(option => 
-            option.setName('channel2')
-                .setDescription('الشات الثاني (اختياري)')
-                .setRequired(false))
-        .addChannelOption(option => 
-            option.setName('channel3')
-                .setDescription('الشات الثالث (اختياري)')
-                .setRequired(false))
-        .addChannelOption(option => 
-            option.setName('channel4')
-                .setDescription('الشات الرابع (اختياري)')
-                .setRequired(false))
-        .addChannelOption(option => 
-            option.setName('channel5')
-                .setDescription('الشات الخامس (اختياري)')
-                .setRequired(false))
-        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
-].map(command => command.toJSON());
+    const channelsList = state.channels.size
+        ? [...state.channels].map(id => `<#${id}>`).join(' ')
+        : 'لم تختار بعد';
+    embed.addFields(
+        { name: 'الرومات المحددة', value: channelsList, inline: false }
+    );
 
+    if (state.type === 'auto-delete') {
+        embed.addFields({
+            name: 'المدة',
+            value: state.duration != null ? `${state.duration} دقيقة` : 'لم تحدد بعد',
+            inline: false
+        });
+    }
+
+    return embed;
+}
+
+function autoDeleteRow() {
+    const chRow = new ActionRowBuilder().addComponents(
+        new ChannelSelectMenuBuilder()
+            .setCustomId('autodel_channels')
+            .setPlaceholder('اختر الرومات (ممكن أكثر من واحد)')
+            .setChannelTypes([ChannelType.GuildText])
+            .setMinValues(1)
+            .setMaxValues(25)
+    );
+    const btnRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('autodel_duration').setLabel('المدة').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('autodel_apply').setLabel('تشغيل').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('autodel_cancel').setLabel('إلغاء').setStyle(ButtonStyle.Danger)
+    );
+    return [chRow, btnRow];
+}
+
+function separatorRow() {
+    const chRow = new ActionRowBuilder().addComponents(
+        new ChannelSelectMenuBuilder()
+            .setCustomId('sep_channels')
+            .setPlaceholder('اختر الرومات (ممكن أكثر من واحد)')
+            .setChannelTypes([ChannelType.GuildText])
+            .setMinValues(1)
+            .setMaxValues(25)
+    );
+    const btnRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('sep_apply').setLabel('تشغيل').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('sep_cancel').setLabel('إلغاء').setStyle(ButtonStyle.Danger)
+    );
+    return [chRow, btnRow];
+}
+
+async function sendAutoDeletePanel(channel, userId) {
+    const state = {
+        type: 'auto-delete',
+        channels: new Set(),
+        duration: null
+    };
+    panels.set(userId, state);
+    await channel.send({
+        embeds: [panelEmbed(state)],
+        components: autoDeleteRow()
+    });
+}
+
+async function sendSeparatorPanel(channel, userId, src) {
+    const state = {
+        type: 'separator',
+        channels: new Set(),
+        src: src
+    };
+    panels.set(userId, state);
+    await channel.send({
+        embeds: [panelEmbed(state)],
+        components: separatorRow()
+    });
+}
+
+// ---------- Ready ----------
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
+
     try {
-        console.log('Started refreshing application (/) commands.');
+        // Remove all existing slash commands
         const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-        await rest.put(
-            Routes.applicationCommands(client.user.id),
-            { body: commands },
-        );
-        console.log('Successfully reloaded application (/) commands.');
+        await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
+        console.log('All slash commands removed.');
     } catch (error) {
         console.error(error);
     }
 
-    // Auto-delete sweep: every 60 seconds, delete expired messages in configured channels
+    // Auto-delete sweep every 60 seconds
     setInterval(async () => {
         try {
             const configs = await db.getAllAutoDeletes();
             if (!configs || configs.length === 0) return;
 
             for (const config of configs) {
-                const channel = await client.channels.fetch(config.channel_id).catch(() => null);
+                const channel = await client.channels.fetch(config.channel_id, { force: true }).catch(() => null);
                 if (!channel || !channel.isTextBased()) continue;
 
                 const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
@@ -164,282 +169,193 @@ client.once('ready', async () => {
     }, 60 * 1000);
 });
 
+// ---------- Component interactions (panels) ----------
 client.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand()) return;
+    if (interaction.isChatInputCommand()) return;
 
-    if (process.env.ADMIN_CHANNEL_ID && interaction.channel.id !== process.env.ADMIN_CHANNEL_ID) {
-        return interaction.reply({ content: 'عذراً، لا يمكنك استخدام أوامر التحكم إلا في الشات المخصص لها.', ephemeral: true });
-    }
+    const userId = interaction.user.id;
 
-    if (interaction.commandName === 'setup-separator') {
-        const channel = interaction.options.getChannel('channel');
-        const url = interaction.options.getString('url');
-        const attachment = interaction.options.getAttachment('image');
+    // Channel selection updates
+    if (interaction.isChannelSelectMenu()) {
+        if (interaction.customId === 'autodel_channels' || interaction.customId === 'sep_channels') {
+            const state = panels.get(userId);
+            if (!state) return;
 
-        let finalUrl = null;
-        if (attachment) {
-            finalUrl = attachment.url;
-        } else if (url) {
-            finalUrl = url;
-        }
-
-        if (!finalUrl) {
-            return interaction.reply({ content: 'يجب عليك إما وضع رابط الصورة أو رفع صورة!', ephemeral: true });
-        }
-
-        const isFullUrl = /^https?:\/\//i.test(finalUrl);
-        const isExistingFile = fs.existsSync(path.join(__dirname, finalUrl));
-        if (!isFullUrl && !isExistingFile) {
-            return interaction.reply({ content: 'القيمة المُدخلة ليست رابط صورة صحيح وليست ملف موجود في المشروع. ارفع الصورة من خيار (image) أو ضع رابطاً كاملاً يبدأ بـ https://', ephemeral: true });
-        }
-
-        try {
-            await db.setSeparator(channel.id, finalUrl);
-            await interaction.reply({ content: `تم إعداد الفاصل بنجاح في شات ${channel}`, ephemeral: true });
-        } catch (error) {
-            console.error(error);
-            await interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
-        }
-    }
-
-    if (interaction.commandName === 'stop-separator') {
-        const channel = interaction.options.getChannel('channel');
-        try {
-            await db.removeSeparator(channel.id);
-            await interaction.reply({ content: `تم إيقاف الفاصل في شات ${channel}`, ephemeral: true });
-        } catch (error) {
-            console.error(error);
-            await interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
-        }
-    }
-
-    if (interaction.commandName === 'setup-reaction') {
-        const channel = interaction.options.getChannel('channel');
-        const emoji = interaction.options.getString('emoji');
-        try {
-            await db.setReaction(channel.id, emoji);
-            await interaction.reply({ content: `تم إعداد الرياكشن التلقائي ${emoji} في شات ${channel}`, ephemeral: true });
-        } catch (error) {
-            console.error(error);
-            await interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
-        }
-    }
-
-    if (interaction.commandName === 'stop-reaction') {
-        const channel = interaction.options.getChannel('channel');
-        try {
-            await db.removeReaction(channel.id);
-            await interaction.reply({ content: `تم إيقاف الرياكشن التلقائي في شات ${channel}`, ephemeral: true });
-        } catch (error) {
-            console.error(error);
-            await interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
-        }
-    }
-
-    if (interaction.commandName === 'auto-delete') {
-        const channels = [];
-        for (let i = 1; i <= 5; i++) {
-            const ch = interaction.options.getChannel(`channel${i}`);
-            if (ch) channels.push(ch);
-        }
-        const duration = interaction.options.getInteger('duration');
-        try {
-            for (const ch of channels) {
-                await db.setAutoDelete(ch.id, duration);
-            }
-            await interaction.reply({
-                content: `تم تفعيل الحذف التلقائي لـ ${channels.length} روم، الرسائل تُحذف بعد ${duration} دقيقة.\nالرومات: ${channels.join(' ')}`,
-                ephemeral: true
+            state.channels = new Set(interaction.values);
+            const rows = state.type === 'auto-delete' ? autoDeleteRow() : separatorRow();
+            await interaction.update({
+                embeds: [panelEmbed(state)],
+                components: rows
             });
-        } catch (error) {
-            console.error(error);
-            await interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
         }
+        return;
     }
 
-    if (interaction.commandName === 'stop-auto-delete') {
-        const channels = [];
-        for (let i = 1; i <= 5; i++) {
-            const ch = interaction.options.getChannel(`channel${i}`);
-            if (ch) channels.push(ch);
+    // Buttons
+    if (interaction.isButton()) {
+        const state = panels.get(userId);
+
+        if (interaction.customId === 'autodel_duration') {
+            if (!state || state.type !== 'auto-delete') return;
+            const modal = new ModalBuilder()
+                .setCustomId('autodel_time')
+                .setTitle('المدة بالدقائق')
+                .addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('minutes')
+                            .setLabel('عدد الدقائق قبل حذف الرسائل')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(true)
+                            .setPlaceholder('مثال: 5')
+                    )
+                );
+            return interaction.showModal(modal);
         }
-        try {
-            for (const ch of channels) {
-                await db.removeAutoDelete(ch.id);
+
+        if (interaction.customId === 'autodel_apply') {
+            if (!state || state.type !== 'auto-delete') return;
+            if (state.channels.size === 0) {
+                return interaction.reply({ content: 'اختر الرومات أولاً من القائمة.', ephemeral: true });
             }
-            await interaction.reply({
-                content: `تم إيقاف الحذف التلقائي لـ ${channels.length} روم: ${channels.join(' ')}`,
-                ephemeral: true
-            });
-        } catch (error) {
-            console.error(error);
-            await interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
+            if (state.duration == null) {
+                return interaction.reply({ content: 'اضغط زر «المدة» واكتب الوقت قبل التشغيل.', ephemeral: true });
+            }
+            try {
+                for (const id of state.channels) {
+                    await db.setAutoDelete(id, state.duration);
+                }
+                const done = new EmbedBuilder()
+                    .setColor('#57F287')
+                    .setTitle('تم التفعيل')
+                    .setDescription(
+                        `راح تُحذف الرسائل تلقائياً بعد **${state.duration} دقيقة** في:\n` +
+                        [...state.channels].map(id => `<#${id}>`).join(' ')
+                    );
+                panels.delete(userId);
+                await interaction.update({ embeds: [done], components: [] });
+                return interaction.followUp({ content: '🔔 تم تشغيل الحذف التلقائي بنجاح.', ephemeral: true });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: 'حدث خطأ أثناء الحفظ.', ephemeral: true });
+            }
         }
+
+        if (interaction.customId === 'sep_apply') {
+            if (!state || state.type !== 'separator') return;
+            if (state.channels.size === 0) {
+                return interaction.reply({ content: 'اختر الرومات أولاً من القائمة.', ephemeral: true });
+            }
+            try {
+                for (const id of state.channels) {
+                    await db.setSeparator(id, state.src);
+                }
+                const done = new EmbedBuilder()
+                    .setColor('#57F287')
+                    .setTitle('تم التفعيل')
+                    .setDescription(
+                        `تم إعداد الفاصل في:\n` +
+                        [...state.channels].map(id => `<#${id}>`).join(' ')
+                    );
+                panels.delete(userId);
+                await interaction.update({ embeds: [done], components: [] });
+                return interaction.followUp({ content: '🔔 تم تشغيل الفاصل بنجاح.', ephemeral: true });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: 'حدث خطأ أثناء الحفظ.', ephemeral: true });
+            }
+        }
+
+        if (interaction.customId === 'autodel_cancel' || interaction.customId === 'sep_cancel') {
+            panels.delete(userId);
+            const cancelled = new EmbedBuilder()
+                .setColor('#ED4245')
+                .setTitle('تم الإلغاء')
+                .setDescription('لم يتم تطبيق أي إعداد.');
+            await interaction.update({ embeds: [cancelled], components: [] });
+            return interaction.followUp({ content: 'أُلغي الإعداد.', ephemeral: true });
+        }
+
+        return;
+    }
+
+    // Modal submit (duration)
+    if (interaction.isModalSubmit()) {
+        if (interaction.customId === 'autodel_time') {
+            const state = panels.get(userId);
+            if (!state || state.type !== 'auto-delete') return;
+
+            const minutes = parseInt(interaction.fields.getTextInputValue('minutes'), 10);
+            if (isNaN(minutes) || minutes < 1) {
+                return interaction.reply({ content: 'المدة يجب أن تكون رقماً صحيحاً أكبر من صفر.', ephemeral: true });
+            }
+            state.duration = minutes;
+            await interaction.update({
+                embeds: [panelEmbed(state)],
+                components: autoDeleteRow()
+            });
+        }
+        return;
     }
 });
 
-const PREFIX = process.env.PREFIX || '-';
-
-function isAdminChannel(message) {
-    if (process.env.ADMIN_CHANNEL_ID && message.channel.id !== process.env.ADMIN_CHANNEL_ID) {
-        return false;
-    }
-    return true;
-}
-
-async function handlePrefixCommand(message) {
-    if (!isAdminChannel(message)) {
-        return message.reply('عذراً، لا يمكنك استخدام أوامر التحكم إلا في الشات المخصص لها.');
-    }
-
-    if (message.commandName === 'help' || message.commandName === 'مساعدة') {
-        return message.reply(
-            '**قائمة الأوامر:**\n' +
-            `- \`${PREFIX}setup-separator #شات [رابط الصورة]\` - إعداد الفاصل (أو ارفع الصورة مع الرسالة)\n` +
-            `- \`${PREFIX}stop-separator #شات\` - إيقاف الفاصل\n` +
-            `- \`${PREFIX}setup-reaction #شات الإيموجي\` - رياكشن تلقائي (تفصل بين الإيموجيات بمسافة)\n` +
-            `- \`${PREFIX}stop-reaction #شات\` - إيقاف الرياكشن\n` +
-            `- \`${PREFIX}auto-delete <المدة بالدقائق> #شات1 #شات2 ...\` - حذف تلقائي للرسائل بعد المدة\n` +
-            `- \`${PREFIX}stop-auto-delete #شات1 #شات2 ...\` - إيقاف الحذف التلقائي\n` +
-            `- \`${PREFIX}help\` - عرض هذه القائمة`
-        );
-    }
-
-    if (message.commandName === 'setup-separator') {
-        const channel = message.mentions.channels.first();
-        if (!channel) return message.reply('يجب أن تذكر الشات: `-setup separator #شات [رابط]`');
-
-        let finalUrl = null;
-        const attachment = message.attachments.first();
-        if (attachment) {
-            finalUrl = attachment.url;
-        } else if (message.args.length > 0) {
-            finalUrl = message.args[0];
-        }
-
-        if (!finalUrl) {
-            return message.reply('يجب عليك إما وضع رابط الصورة أو رفع صورة مع الأمر!');
-        }
-
-        const isFullUrl = /^https?:\/\//i.test(finalUrl);
-        const isExistingFile = fs.existsSync(path.join(__dirname, finalUrl));
-        if (!isFullUrl && !isExistingFile) {
-            return message.reply('القيمة المُدخلة ليست رابط صورة صحيح ولا ملف موجود في المشروع. ارفع الصورة مع الأمر أو ضع رابطاً كاملاً يبدأ بـ https://');
-        }
-
-        try {
-            await db.setSeparator(channel.id, finalUrl);
-            return message.reply(`تم إعداد الفاصل بنجاح في شات ${channel}`);
-        } catch (error) {
-            console.error(error);
-            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
-        }
-    }
-
-    if (message.commandName === 'stop-separator') {
-        const channel = message.mentions.channels.first();
-        if (!channel) return message.reply('يجب أن تذكر الشات: `-stop separator #شات`');
-        try {
-            await db.removeSeparator(channel.id);
-            return message.reply(`تم إيقاف الفاصل في شات ${channel}`);
-        } catch (error) {
-            console.error(error);
-            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
-        }
-    }
-
-    if (message.commandName === 'setup-reaction') {
-        const channel = message.mentions.channels.first();
-        const emoji = message.args.join(' ');
-        if (!channel) return message.reply('يجب أن تذكر الشات: `-setup reaction #شات الإيموجي`');
-        if (!emoji) return message.reply('يجب وضع الإيموجي بعد الشات');
-        try {
-            await db.setReaction(channel.id, emoji);
-            return message.reply(`تم إعداد الرياكشن التلقائي ${emoji} في شات ${channel}`);
-        } catch (error) {
-            console.error(error);
-            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
-        }
-    }
-
-    if (message.commandName === 'stop-reaction') {
-        const channel = message.mentions.channels.first();
-        if (!channel) return message.reply('يجب أن تذكر الشات: `-stop reaction #شات`');
-        try {
-            await db.removeReaction(channel.id);
-            return message.reply(`تم إيقاف الرياكشن التلقائي في شات ${channel}`);
-        } catch (error) {
-            console.error(error);
-            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
-        }
-    }
-
-    if (message.commandName === 'auto-delete' || message.commandName === 'auto delete') {
-        const duration = parseInt(message.args[0], 10);
-        if (isNaN(duration) || duration < 1) {
-            return message.reply('يجب وضع المدة أولاً بالدقائق: `-auto delete 5 #شات1 #شات2`');
-        }
-        const channels = message.mentions.channels;
-        if (channels.size === 0) {
-            return message.reply('يجب أن تذكر روم واحد على الأقل: `-auto delete 5 #شات1 #شات2`');
-        }
-        try {
-            for (const ch of channels.values()) {
-                await db.setAutoDelete(ch.id, duration);
-            }
-            return message.reply(`تم تفعيل الحذف التلقائي لـ ${channels.size} روم، الرسائل تُحذف بعد ${duration} دقيقة.\nالرومات: ${channels.map(c => c).join(' ')}`);
-        } catch (error) {
-            console.error(error);
-            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
-        }
-    }
-
-    if (message.commandName === 'stop-auto-delete') {
-        const channels = message.mentions.channels;
-        if (channels.size === 0) {
-            return message.reply('يجب أن تذكر روم واحد على الأقل: `-stop-auto-delete #شات1 #شات2`');
-        }
-        try {
-            for (const ch of channels.values()) {
-                await db.removeAutoDelete(ch.id);
-            }
-            return message.reply(`تم إيقاف الحذف التلقائي لـ ${channels.size} روم: ${channels.map(c => c).join(' ')}`);
-        } catch (error) {
-            console.error(error);
-            return message.reply('حدث خطأ أثناء حفظ الإعدادات.');
-        }
-    }
-
-    return message.reply(`أمر غير معروف. اكتب \`${PREFIX}help\` لعرض الأوامر.`);
-}
-
+// ---------- Prefix commands ----------
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
 
-    if (message.content.startsWith(PREFIX)) {
+    if (message.content.trimStart().startsWith(PREFIX)) {
         const content = message.content.slice(PREFIX.length).trim();
         const args = content.split(/\s+/).filter(a => a !== '');
-        let commandName = args.shift().toLowerCase();
+        const name = (args.shift() || '').toLowerCase();
 
-        const subMap = {
-            'auto': { 'delete': 'auto-delete', 'stop': 'stop-auto-delete' },
-            'setup': { 'separator': 'setup-separator', 'reaction': 'setup-reaction' },
-            'stop': { 'separator': 'stop-separator', 'reaction': 'stop-reaction' }
-        };
-        if (subMap[commandName] && subMap[commandName][args[0]]) {
-            commandName = subMap[commandName][args.shift()];
+        if (!isAdminChannel(message.channel.id)) {
+            return message.reply('عذراً، لا يمكنك استخدام الأوامر إلا في الشات المخصص لها.');
         }
 
-        message.commandName = commandName;
-        message.args = args;
-        await handlePrefixCommand(message);
+        if (name === 'auto-delete') {
+            await sendAutoDeletePanel(message.channel, message.author.id);
+            return;
+        }
+
+        if (name === 'setup-separator') {
+            let src = null;
+            const attachment = message.attachments.first();
+            if (attachment) {
+                src = attachment.url;
+            } else if (args[0]) {
+                src = args[0];
+            }
+
+            if (!src) {
+                return message.reply(
+                    'أرفق صورة الفاصل مع الأمر، أو ضع رابطها بعده.\n' +
+                    'مثال: اكتب `-setup-separator` وأرفق الصورة في نفس الرسالة.'
+                );
+            }
+
+            const isFullUrl = /^https?:\/\//i.test(src);
+            const isExistingFile = fs.existsSync(path.join(__dirname, src));
+            if (!isFullUrl && !isExistingFile) {
+                return message.reply(
+                    'القيمة المُدخلة ليست رابط صورة صحيح ولا ملف موجود في المشروع. ارفع الصورة مع الأمر أو ضع رابطاً كاملاً يبدأ بـ https://'
+                );
+            }
+
+            await sendSeparatorPanel(message.channel, message.author.id, src);
+            return;
+        }
+
+        return message.reply(
+            'الأوامر المتاحة:\n' +
+            `- \`${PREFIX}auto-delete\` → لوحة الحذف التلقائي (اختر الرومات + المدة + تشغيل)\n` +
+            `- \`${PREFIX}setup-separator\` → أرفق صورة أو رابطاً، ثم اختر الرومات`
+        );
     }
 
-    // Check Auto Reaction
+    // Auto Reaction (runtime)
     try {
         const reactionData = await db.getReaction(message.channel.id);
         if (reactionData && reactionData.emoji) {
-            // Split emojis by space in case the user provided multiple
             const emojis = reactionData.emoji.split(/\s+/).filter(e => e.trim() !== '');
             for (const emj of emojis) {
                 await message.react(emj).catch(err => console.error(`Error reacting with ${emj}`, err.message));
@@ -449,7 +365,7 @@ client.on('messageCreate', async message => {
         console.error('Error fetching reaction config', error);
     }
 
-    // Check Separator
+    // Separator (runtime)
     try {
         const separatorData = await db.getSeparator(message.channel.id);
         if (separatorData && separatorData.separator_url) {
