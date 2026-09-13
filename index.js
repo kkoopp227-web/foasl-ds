@@ -75,8 +75,8 @@ function autoDeleteRow() {
     const chRow = new ActionRowBuilder().addComponents(
         new ChannelSelectMenuBuilder()
             .setCustomId('autodel_channels')
-            .setPlaceholder('اختر الرومات (ممكن أكثر من واحد)')
-            .setChannelTypes([ChannelType.GuildText])
+            .setPlaceholder('اختر الرومات الصوتية (ممكن أكثر من واحد)')
+            .setChannelTypes([ChannelType.GuildVoice])
             .setMinValues(1)
             .setMaxValues(25)
     );
@@ -92,8 +92,8 @@ function separatorRow() {
     const chRow = new ActionRowBuilder().addComponents(
         new ChannelSelectMenuBuilder()
             .setCustomId('sep_channels')
-            .setPlaceholder('اختر الرومات (ممكن أكثر من واحد)')
-            .setChannelTypes([ChannelType.GuildText])
+            .setPlaceholder('اختر الرومات الصوتية (ممكن أكثر من واحد)')
+            .setChannelTypes([ChannelType.GuildVoice])
             .setMinValues(1)
             .setMaxValues(25)
     );
@@ -151,15 +151,19 @@ client.once('ready', async () => {
 
             for (const config of configs) {
                 const channel = await client.channels.fetch(config.channel_id, { force: true }).catch(() => null);
-                if (!channel || !channel.isTextBased()) continue;
+                if (!channel) continue;
 
-                const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
-                if (!messages) continue;
-
-                const cutoff = Date.now() - config.duration_minutes * 60 * 1000;
-                for (const msg of messages.values()) {
-                    if (!msg.pinned && msg.createdTimestamp < cutoff) {
-                        await msg.delete().catch(() => {});
+                try {
+                    const data = await client.rest.get(`/channels/${config.channel_id}/messages?limit=100`);
+                    const cutoff = Date.now() - config.duration_minutes * 60 * 1000;
+                    for (const msg of data) {
+                        if (!msg.pinned && Date.parse(msg.timestamp) < cutoff) {
+                            await client.rest.delete(`/channels/${config.channel_id}/messages/${msg.id}`).catch(() => {});
+                        }
+                    }
+                } catch (err) {
+                    if (!err.message || !err.message.startsWith('Unknown Channel')) {
+                        console.error('Auto-delete channel error:', err.message);
                     }
                 }
             }
@@ -372,15 +376,27 @@ client.on('messageCreate', async message => {
             const url = separatorData.separator_url;
             let separatorMessage;
 
+            const isText = message.channel.isTextBased && message.channel.isTextBased();
+
             if (/^https?:\/\//i.test(url)) {
                 const embed = new EmbedBuilder()
                     .setColor('#2b2d31')
                     .setImage(url);
-                separatorMessage = await message.channel.send({ embeds: [embed] });
-            } else if (fs.existsSync(path.join(__dirname, url))) {
+                if (isText) {
+                    separatorMessage = await message.channel.send({ embeds: [embed] });
+                } else {
+                    separatorMessage = await client.rest.post(`/channels/${message.channel.id}/messages`, {
+                        body: { embeds: [embed.toJSON()] }
+                    });
+                }
+            } else if (fs.existsSync(path.join(__dirname, url)) && isText) {
                 separatorMessage = await message.channel.send({ files: [path.join(__dirname, url)] });
-            } else {
+            } else if (isText) {
                 separatorMessage = await message.channel.send({ content: url });
+            } else {
+                separatorMessage = await client.rest.post(`/channels/${message.channel.id}/messages`, {
+                    body: { content: url }
+                });
             }
 
             await db.setLastSeparatorMessage(message.channel.id, separatorMessage.id);
