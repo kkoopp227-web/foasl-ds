@@ -6,7 +6,9 @@ const port = process.env.PORT || 3000;
 app.get('/', (req, res) => res.send('Bot is running!'));
 app.listen(port, () => console.log(`Dummy server listening at http://localhost:${port}`));
 
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, PermissionsBitField } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, PermissionsBitField, EmbedBuilder } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
 const db = require('./database');
 
 const client = new Client({
@@ -65,6 +67,61 @@ const commands = [
                 .setDescription('الشات')
                 .setRequired(true))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+    new SlashCommandBuilder()
+        .setName('auto-delete')
+        .setDescription('إعداد الحذف التلقائي لرسائل الرومات')
+        .addChannelOption(option => 
+            option.setName('channel1')
+                .setDescription('الشات الأول')
+                .setRequired(true))
+        .addChannelOption(option => 
+            option.setName('channel2')
+                .setDescription('الشات الثاني (اختياري)')
+                .setRequired(false))
+        .addChannelOption(option => 
+            option.setName('channel3')
+                .setDescription('الشات الثالث (اختياري)')
+                .setRequired(false))
+        .addChannelOption(option => 
+            option.setName('channel4')
+                .setDescription('الشات الرابع (اختياري)')
+                .setRequired(false))
+        .addChannelOption(option => 
+            option.setName('channel5')
+                .setDescription('الشات الخامس (اختياري)')
+                .setRequired(false))
+        .addIntegerOption(option => 
+            option.setName('duration')
+                .setDescription('المدة بالدقائق قبل حذف الرسائل')
+                .setRequired(true)
+                .setMinValue(1))
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+    new SlashCommandBuilder()
+        .setName('stop-auto-delete')
+        .setDescription('إيقاف الحذف التلقائي لرسائل الرومات')
+        .addChannelOption(option => 
+            option.setName('channel1')
+                .setDescription('الشات الأول')
+                .setRequired(true))
+        .addChannelOption(option => 
+            option.setName('channel2')
+                .setDescription('الشات الثاني (اختياري)')
+                .setRequired(false))
+        .addChannelOption(option => 
+            option.setName('channel3')
+                .setDescription('الشات الثالث (اختياري)')
+                .setRequired(false))
+        .addChannelOption(option => 
+            option.setName('channel4')
+                .setDescription('الشات الرابع (اختياري)')
+                .setRequired(false))
+        .addChannelOption(option => 
+            option.setName('channel5')
+                .setDescription('الشات الخامس (اختياري)')
+                .setRequired(false))
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 ].map(command => command.toJSON());
 
 client.once('ready', async () => {
@@ -80,6 +137,31 @@ client.once('ready', async () => {
     } catch (error) {
         console.error(error);
     }
+
+    // Auto-delete sweep: every 60 seconds, delete expired messages in configured channels
+    setInterval(async () => {
+        try {
+            const configs = await db.getAllAutoDeletes();
+            if (!configs || configs.length === 0) return;
+
+            for (const config of configs) {
+                const channel = await client.channels.fetch(config.channel_id).catch(() => null);
+                if (!channel || !channel.isTextBased()) continue;
+
+                const messages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+                if (!messages) continue;
+
+                const cutoff = Date.now() - config.duration_minutes * 60 * 1000;
+                for (const msg of messages.values()) {
+                    if (!msg.pinned && msg.createdTimestamp < cutoff) {
+                        await msg.delete().catch(() => {});
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error in auto-delete sweep:', error.message);
+        }
+    }, 60 * 1000);
 });
 
 client.on('interactionCreate', async interaction => {
@@ -103,6 +185,12 @@ client.on('interactionCreate', async interaction => {
 
         if (!finalUrl) {
             return interaction.reply({ content: 'يجب عليك إما وضع رابط الصورة أو رفع صورة!', ephemeral: true });
+        }
+
+        const isFullUrl = /^https?:\/\//i.test(finalUrl);
+        const isExistingFile = fs.existsSync(path.join(__dirname, finalUrl));
+        if (!isFullUrl && !isExistingFile) {
+            return interaction.reply({ content: 'القيمة المُدخلة ليست رابط صورة صحيح وليست ملف موجود في المشروع. ارفع الصورة من خيار (image) أو ضع رابطاً كاملاً يبدأ بـ https://', ephemeral: true });
         }
 
         try {
@@ -147,6 +235,47 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
         }
     }
+
+    if (interaction.commandName === 'auto-delete') {
+        const channels = [];
+        for (let i = 1; i <= 5; i++) {
+            const ch = interaction.options.getChannel(`channel${i}`);
+            if (ch) channels.push(ch);
+        }
+        const duration = interaction.options.getInteger('duration');
+        try {
+            for (const ch of channels) {
+                await db.setAutoDelete(ch.id, duration);
+            }
+            await interaction.reply({
+                content: `تم تفعيل الحذف التلقائي لـ ${channels.length} روم، الرسائل تُحذف بعد ${duration} دقيقة.\nالرومات: ${channels.join(' ')}`,
+                ephemeral: true
+            });
+        } catch (error) {
+            console.error(error);
+            await interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
+        }
+    }
+
+    if (interaction.commandName === 'stop-auto-delete') {
+        const channels = [];
+        for (let i = 1; i <= 5; i++) {
+            const ch = interaction.options.getChannel(`channel${i}`);
+            if (ch) channels.push(ch);
+        }
+        try {
+            for (const ch of channels) {
+                await db.removeAutoDelete(ch.id);
+            }
+            await interaction.reply({
+                content: `تم إيقاف الحذف التلقائي لـ ${channels.length} روم: ${channels.join(' ')}`,
+                ephemeral: true
+            });
+        } catch (error) {
+            console.error(error);
+            await interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
+        }
+    }
 });
 
 client.on('messageCreate', async message => {
@@ -170,9 +299,21 @@ client.on('messageCreate', async message => {
     try {
         const separatorData = await db.getSeparator(message.channel.id);
         if (separatorData && separatorData.separator_url) {
-            // Simply send the new separator without deleting the old one
-            const newSeparator = await message.channel.send(separatorData.separator_url);
-            await db.setLastSeparatorMessage(message.channel.id, newSeparator.id);
+            const url = separatorData.separator_url;
+            let separatorMessage;
+
+            if (/^https?:\/\//i.test(url)) {
+                const embed = new EmbedBuilder()
+                    .setColor('#2b2d31')
+                    .setImage(url);
+                separatorMessage = await message.channel.send({ embeds: [embed] });
+            } else if (fs.existsSync(path.join(__dirname, url))) {
+                separatorMessage = await message.channel.send({ files: [path.join(__dirname, url)] });
+            } else {
+                separatorMessage = await message.channel.send({ content: url });
+            }
+
+            await db.setLastSeparatorMessage(message.channel.id, separatorMessage.id);
         }
     } catch (error) {
         console.error('Error handling separator', error);

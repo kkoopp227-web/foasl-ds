@@ -23,8 +23,14 @@ const ReactionSchema = new mongoose.Schema({
     emoji: String
 });
 
+const AutoDeleteSchema = new mongoose.Schema({
+    channel_id: { type: String, required: true, unique: true },
+    duration_minutes: { type: Number, required: true }
+});
+
 const Separator = mongoose.model('Separator', SeparatorSchema);
 const Reaction = mongoose.model('Reaction', ReactionSchema);
+const AutoDelete = mongoose.model('AutoDelete', AutoDeleteSchema);
 
 // Helper functions for Separators
 async function getSeparator(channelId) {
@@ -67,6 +73,27 @@ async function removeReaction(channelId) {
     await Reaction.deleteOne({ channel_id: channelId });
 }
 
+// Helper functions for Auto Delete
+async function getAutoDelete(channelId) {
+    return await AutoDelete.findOne({ channel_id: channelId });
+}
+
+async function getAllAutoDeletes() {
+    return await AutoDelete.find({});
+}
+
+async function setAutoDelete(channelId, durationMinutes) {
+    await AutoDelete.findOneAndUpdate(
+        { channel_id: channelId },
+        { duration_minutes: durationMinutes },
+        { upsert: true, new: true }
+    );
+}
+
+async function removeAutoDelete(channelId) {
+    await AutoDelete.deleteOne({ channel_id: channelId });
+}
+
 module.exports = {
     getSeparator,
     setSeparator,
@@ -74,5 +101,9 @@ module.exports = {
     setLastSeparatorMessage,
     getReaction,
     setReaction,
-    removeReaction
+    removeReaction,
+    getAutoDelete,
+    getAllAutoDeletes,
+    setAutoDelete,
+    removeAutoDelete
 };
