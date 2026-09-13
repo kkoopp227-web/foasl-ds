@@ -33,6 +33,11 @@ function isAdminChannel(channelId) {
     return true;
 }
 
+function isAllowedGuild(guildId) {
+    if (!process.env.GUILD_ID) return true;
+    return String(process.env.GUILD_ID) === String(guildId);
+}
+
 const commands = [
     new SlashCommandBuilder()
         .setName('setup-separator')
@@ -245,7 +250,7 @@ client.once('ready', async () => {
 
             for (const config of configs) {
                 const channel = await client.channels.fetch(config.channel_id, { force: true }).catch(() => null);
-                if (!channel) continue;
+                if (!channel || !isAllowedGuild(channel.guildId)) continue;
 
                 try {
                     const data = await client.rest.get(`/channels/${config.channel_id}/messages?limit=100`);
@@ -269,6 +274,8 @@ client.once('ready', async () => {
 
 // ---------- Component interactions (panels) ----------
 client.on('interactionCreate', async interaction => {
+    if (!isAllowedGuild(interaction.guild && interaction.guild.id)) return;
+
     if (interaction.isChatInputCommand()) {
         if (!isAdminChannel(interaction.channel.id)) {
             return interaction.reply({ content: 'عذراً، لا يمكنك استخدام أوامر التحكم إلا في الشات المخصص لها.', ephemeral: true });
@@ -605,6 +612,7 @@ client.on('interactionCreate', async interaction => {
 // ---------- Prefix commands ----------
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
+    if (!isAllowedGuild(message.guild && message.guild.id)) return;
 
     if (message.content.trimStart().startsWith(PREFIX)) {
         const content = message.content.slice(PREFIX.length).trim();
