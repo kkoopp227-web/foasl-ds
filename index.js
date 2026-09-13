@@ -58,15 +58,11 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('setup-reaction')
-        .setDescription('إعداد الرياكشن التلقائي')
-        .addChannelOption(option =>
-            option.setName('channel')
-                .setDescription('الشات')
-                .setRequired(true))
+        .setDescription('إعداد الرياكشن التلقائي (افتح اللوحة واختر الرومات)')
         .addStringOption(option =>
             option.setName('emoji')
-                .setDescription('الإيموجي (أكثر من واحد بينهم مسافة)')
-                .setRequired(true))
+                .setDescription('الإيموجي (اختياري، يمكن تغييره من اللوحة)')
+                .setRequired(false))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 
     new SlashCommandBuilder()
@@ -106,11 +102,18 @@ function panelEmbed(state) {
             '2- اضغط زر «المدة» واكتب الوقت بالدقائق.\n' +
             '3- اضغط «تشغيل» لتطبيق الإعداد.'
         );
-    } else {
+    } else if (state.type === 'separator') {
         embed.setTitle('إعداد الفاصل');
         embed.setDescription(
             '1- اختر الرومات من القائمة أدناه.\n' +
             '2- اضغط «تشغيل» لتطبيق الفاصل على الرومات المحددة.'
+        );
+    } else {
+        embed.setTitle('إعداد الرياكشن التلقائي');
+        embed.setDescription(
+            '1- اختر الرومات من القائمة أدناه.\n' +
+            '2- اضغط زر «الإيموجي» واكتب الإيموجي (ممكن أكثر من واحد بمسافة).\n' +
+            '3- اضغط «تشغيل» لتطبيق الإعداد.'
         );
     }
 
@@ -125,6 +128,14 @@ function panelEmbed(state) {
         embed.addFields({
             name: 'المدة',
             value: state.duration != null ? `${state.duration} دقيقة` : 'لم تحدد بعد',
+            inline: false
+        });
+    }
+
+    if (state.type === 'reaction') {
+        embed.addFields({
+            name: 'الإيموجي',
+            value: state.emoji || 'لم تحدد بعد',
             inline: false
         });
     }
@@ -161,6 +172,23 @@ function separatorRow() {
     const btnRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('sep_apply').setLabel('تشغيل').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId('sep_cancel').setLabel('إلغاء').setStyle(ButtonStyle.Danger)
+    );
+    return [chRow, btnRow];
+}
+
+function reactionRow() {
+    const chRow = new ActionRowBuilder().addComponents(
+        new ChannelSelectMenuBuilder()
+            .setCustomId('react_channels')
+            .setPlaceholder('اختر الرومات الصوتية (ممكن أكثر من واحد)')
+            .setChannelTypes([ChannelType.GuildVoice])
+            .setMinValues(1)
+            .setMaxValues(25)
+    );
+    const btnRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('react_emoji').setLabel('الإيموجي').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId('react_apply').setLabel('تشغيل').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId('react_cancel').setLabel('إلغاء').setStyle(ButtonStyle.Danger)
     );
     return [chRow, btnRow];
 }
@@ -292,15 +320,13 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (name === 'setup-reaction') {
-            const channel = interaction.options.getChannel('channel');
             const emoji = interaction.options.getString('emoji');
-            try {
-                await db.setReaction(channel.id, emoji);
-                return interaction.reply({ content: `تم إعداد الرياكشن التلقائي ${emoji} في شات ${channel}`, ephemeral: true });
-            } catch (error) {
-                console.error(error);
-                return interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
-            }
+            const state = { type: 'reaction', channels: new Set(), emoji: emoji || null };
+            panels.set(interaction.user.id, state);
+            return interaction.reply({
+                embeds: [panelEmbed(state)],
+                components: reactionRow()
+            });
         }
 
         if (name === 'stop-reaction') {
@@ -332,6 +358,18 @@ client.on('interactionCreate', async interaction => {
 
     // Channel selection updates
     if (interaction.isChannelSelectMenu()) {
+        if (interaction.customId === 'react_channels') {
+            const state = panels.get(userId);
+            if (!state || state.type !== 'reaction') return;
+
+            state.channels = new Set(interaction.values);
+            await interaction.update({
+                embeds: [panelEmbed(state)],
+                components: reactionRow()
+            });
+            return;
+        }
+
         if (interaction.customId === 'autodel_channels' || interaction.customId === 'sep_channels') {
             const state = panels.get(userId);
             if (!state) return;
@@ -431,10 +469,66 @@ client.on('interactionCreate', async interaction => {
             return interaction.followUp({ content: 'أُلغي الإعداد.', ephemeral: true });
         }
 
+        if (interaction.customId === 'react_emoji') {
+            if (!state || state.type !== 'reaction') return;
+            const modal = new ModalBuilder()
+                .setCustomId('react_emoji_modal')
+                .setTitle('الإيموجي')
+                .addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('emoji')
+                            .setLabel('اكتب الإيموجي (أكثر من واحد بمسافة)')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(true)
+                            .setPlaceholder('مثال: 👍 ❤️ 😂')
+                    )
+                );
+            return interaction.showModal(modal);
+        }
+
+        if (interaction.customId === 'react_apply') {
+            if (!state || state.type !== 'reaction') return;
+            if (state.channels.size === 0) {
+                return interaction.reply({ content: 'اختر الرومات أولاً من القائمة.', ephemeral: true });
+            }
+            if (!state.emoji) {
+                return interaction.reply({ content: 'اضغط زر «الإيموجي» واكتب الإيموجي قبل التشغيل.', ephemeral: true });
+            }
+            try {
+                for (const id of state.channels) {
+                    await db.setReaction(id, state.emoji);
+                }
+                const done = new EmbedBuilder()
+                    .setColor('#57F287')
+                    .setTitle('تم التفعيل')
+                    .setDescription(
+                        `راح يضيف البوت **${state.emoji}** على كل رسالة في:\n` +
+                        [...state.channels].map(id => `<#${id}>`).join(' ')
+                    );
+                panels.delete(userId);
+                await interaction.update({ embeds: [done], components: [] });
+                return interaction.followUp({ content: '🔔 تم تشغيل الرياكشن التلقائي بنجاح.', ephemeral: true });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: 'حدث خطأ أثناء الحفظ.', ephemeral: true });
+            }
+        }
+
+        if (interaction.customId === 'react_cancel') {
+            panels.delete(userId);
+            const cancelled = new EmbedBuilder()
+                .setColor('#ED4245')
+                .setTitle('تم الإلغاء')
+                .setDescription('لم يتم تطبيق أي إعداد.');
+            await interaction.update({ embeds: [cancelled], components: [] });
+            return interaction.followUp({ content: 'أُلغي الإعداد.', ephemeral: true });
+        }
+
         return;
     }
 
-    // Modal submit (duration)
+    // Modal submit
     if (interaction.isModalSubmit()) {
         if (interaction.customId === 'autodel_time') {
             const state = panels.get(userId);
@@ -448,6 +542,22 @@ client.on('interactionCreate', async interaction => {
             await interaction.update({
                 embeds: [panelEmbed(state)],
                 components: autoDeleteRow()
+            });
+            return;
+        }
+
+        if (interaction.customId === 'react_emoji_modal') {
+            const state = panels.get(userId);
+            if (!state || state.type !== 'reaction') return;
+
+            const emoji = interaction.fields.getTextInputValue('emoji').trim();
+            if (!emoji) {
+                return interaction.reply({ content: 'يجب كتابة إيموجي واحد على الأقل.', ephemeral: true });
+            }
+            state.emoji = emoji;
+            await interaction.update({
+                embeds: [panelEmbed(state)],
+                components: reactionRow()
             });
         }
         return;
