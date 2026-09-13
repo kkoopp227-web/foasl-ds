@@ -9,7 +9,8 @@ app.listen(port, () => console.log(`Dummy server listening at http://localhost:$
 const {
     Client, GatewayIntentBits, EmbedBuilder, REST, Routes,
     ChannelSelectMenuBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-    ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType
+    ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType,
+    SlashCommandBuilder, PermissionsBitField
 } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
@@ -31,6 +32,66 @@ function isAdminChannel(channelId) {
     }
     return true;
 }
+
+const commands = [
+    new SlashCommandBuilder()
+        .setName('setup-separator')
+        .setDescription('إعداد الفاصل (افتح اللوحة واختر الرومات)')
+        .addStringOption(option =>
+            option.setName('url')
+                .setDescription('رابط صورة الفاصل')
+                .setRequired(false))
+        .addAttachmentOption(option =>
+            option.setName('image')
+                .setDescription('رفع صورة الفاصل')
+                .setRequired(false))
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+    new SlashCommandBuilder()
+        .setName('stop-separator')
+        .setDescription('إيقاف الفاصل في شات')
+        .addChannelOption(option =>
+            option.setName('channel')
+                .setDescription('الشات')
+                .setRequired(true))
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+    new SlashCommandBuilder()
+        .setName('setup-reaction')
+        .setDescription('إعداد الرياكشن التلقائي')
+        .addChannelOption(option =>
+            option.setName('channel')
+                .setDescription('الشات')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('emoji')
+                .setDescription('الإيموجي (أكثر من واحد بينهم مسافة)')
+                .setRequired(true))
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+    new SlashCommandBuilder()
+        .setName('stop-reaction')
+        .setDescription('إيقاف الرياكشن التلقائي')
+        .addChannelOption(option =>
+            option.setName('channel')
+                .setDescription('الشات')
+                .setRequired(true))
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+    new SlashCommandBuilder()
+        .setName('auto-delete')
+        .setDescription('إعداد الحذف التلقائي (افتح اللوحة واختر الرومات)')
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+    new SlashCommandBuilder()
+        .setName('stop-auto-delete')
+        .setDescription('إيقاف الحذف التلقائي')
+        .addChannelOption(option =>
+            option.setName('channel')
+                .setDescription('الروم')
+                .setRequired(true))
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+].map(c => c.toJSON());
 
 // ---------- Interactive panel state (key: user id) ----------
 const panels = new Map(); // userId -> { type, channels:Set, duration:number|null, src:string|null }
@@ -135,10 +196,13 @@ client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
     try {
-        // Remove all existing slash commands
+        // Register slash commands
         const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-        await rest.put(Routes.applicationCommands(client.user.id), { body: [] });
-        console.log('All slash commands removed.');
+        await rest.put(
+            Routes.applicationCommands(client.user.id),
+            { body: commands },
+        );
+        console.log('Successfully reloaded application (/) commands.');
     } catch (error) {
         console.error(error);
     }
@@ -175,7 +239,94 @@ client.once('ready', async () => {
 
 // ---------- Component interactions (panels) ----------
 client.on('interactionCreate', async interaction => {
-    if (interaction.isChatInputCommand()) return;
+    if (interaction.isChatInputCommand()) {
+        if (!isAdminChannel(interaction.channel.id)) {
+            return interaction.reply({ content: 'عذراً، لا يمكنك استخدام أوامر التحكم إلا في الشات المخصص لها.', ephemeral: true });
+        }
+
+        const name = interaction.commandName;
+
+        if (name === 'auto-delete') {
+            const state = { type: 'auto-delete', channels: new Set(), duration: null };
+            panels.set(interaction.user.id, state);
+            return interaction.reply({
+                embeds: [panelEmbed(state)],
+                components: autoDeleteRow()
+            });
+        }
+
+        if (name === 'setup-separator') {
+            const url = interaction.options.getString('url');
+            const attachment = interaction.options.getAttachment('image');
+            let src = null;
+            if (attachment) {
+                src = attachment.url;
+            } else if (url) {
+                src = url;
+            }
+            if (!src) {
+                return interaction.reply({ content: 'يجب عليك إما وضع رابط الصورة أو رفع صورة!', ephemeral: true });
+            }
+            const isFullUrl = /^https?:\/\//i.test(src);
+            const isExistingFile = fs.existsSync(path.join(__dirname, src));
+            if (!isFullUrl && !isExistingFile) {
+                return interaction.reply({ content: 'القيمة المُدخلة ليست رابط صورة صحيح ولا ملف موجود في المشروع. ارفع الصورة أو ضع رابطاً كاملاً يبدأ بـ https://', ephemeral: true });
+            }
+            const state = { type: 'separator', channels: new Set(), src };
+            panels.set(interaction.user.id, state);
+            return interaction.reply({
+                embeds: [panelEmbed(state)],
+                components: separatorRow()
+            });
+        }
+
+        if (name === 'stop-separator') {
+            const channel = interaction.options.getChannel('channel');
+            try {
+                await db.removeSeparator(channel.id);
+                return interaction.reply({ content: `تم إيقاف الفاصل في شات ${channel}`, ephemeral: true });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
+            }
+        }
+
+        if (name === 'setup-reaction') {
+            const channel = interaction.options.getChannel('channel');
+            const emoji = interaction.options.getString('emoji');
+            try {
+                await db.setReaction(channel.id, emoji);
+                return interaction.reply({ content: `تم إعداد الرياكشن التلقائي ${emoji} في شات ${channel}`, ephemeral: true });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
+            }
+        }
+
+        if (name === 'stop-reaction') {
+            const channel = interaction.options.getChannel('channel');
+            try {
+                await db.removeReaction(channel.id);
+                return interaction.reply({ content: `تم إيقاف الرياكشن التلقائي في شات ${channel}`, ephemeral: true });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
+            }
+        }
+
+        if (name === 'stop-auto-delete') {
+            const channel = interaction.options.getChannel('channel');
+            try {
+                await db.removeAutoDelete(channel.id);
+                return interaction.reply({ content: `تم إيقاف الحذف التلقائي في روم ${channel}`, ephemeral: true });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
+            }
+        }
+
+        return;
+    }
 
     const userId = interaction.user.id;
 
