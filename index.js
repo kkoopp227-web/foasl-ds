@@ -98,20 +98,21 @@ function panelEmbed(state) {
     if (state.type === 'auto-delete') {
         embed.setTitle('إعداد الحذف التلقائي');
         embed.setDescription(
-            '1- اختر الرومات من القائمة أدناه.\n' +
+            '1- اختر الرومات الصوتية من القائمة أدناه.\n' +
             '2- اضغط زر «المدة» واكتب الوقت بالدقائق.\n' +
             '3- اضغط «تشغيل» لتطبيق الإعداد.'
         );
     } else if (state.type === 'separator') {
         embed.setTitle('إعداد الفاصل');
         embed.setDescription(
-            '1- اختر الرومات من القائمة أدناه.\n' +
-            '2- اضغط «تشغيل» لتطبيق الفاصل على الرومات المحددة.'
+            '1- اختر الشاتات من القائمة أدناه.\n' +
+            '2- اضغط زر «الصورة» وضع رابط صورة الفاصل (إن لم تكن جاهزة).\n' +
+            '3- اضغط «تشغيل» لتطبيق الفاصل على الشاتات المحددة.'
         );
     } else {
         embed.setTitle('إعداد الرياكشن التلقائي');
         embed.setDescription(
-            '1- اختر الرومات من القائمة أدناه.\n' +
+            '1- اختر الشاتات من القائمة أدناه.\n' +
             '2- اضغط زر «الإيموجي» واكتب الإيموجي (ممكن أكثر من واحد بمسافة).\n' +
             '3- اضغط «تشغيل» لتطبيق الإعداد.'
         );
@@ -164,12 +165,13 @@ function separatorRow() {
     const chRow = new ActionRowBuilder().addComponents(
         new ChannelSelectMenuBuilder()
             .setCustomId('sep_channels')
-            .setPlaceholder('اختر الرومات الصوتية (ممكن أكثر من واحد)')
-            .setChannelTypes([ChannelType.GuildVoice])
+            .setPlaceholder('اختر الشاتات (ممكن أكثر من واحد)')
+            .setChannelTypes([ChannelType.GuildText])
             .setMinValues(1)
             .setMaxValues(25)
     );
     const btnRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('sep_image').setLabel('الصورة').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('sep_apply').setLabel('تشغيل').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId('sep_cancel').setLabel('إلغاء').setStyle(ButtonStyle.Danger)
     );
@@ -180,8 +182,8 @@ function reactionRow() {
     const chRow = new ActionRowBuilder().addComponents(
         new ChannelSelectMenuBuilder()
             .setCustomId('react_channels')
-            .setPlaceholder('اختر الرومات الصوتية (ممكن أكثر من واحد)')
-            .setChannelTypes([ChannelType.GuildVoice])
+            .setPlaceholder('اختر الشاتات (ممكن أكثر من واحد)')
+            .setChannelTypes([ChannelType.GuildText])
             .setMinValues(1)
             .setMaxValues(25)
     );
@@ -289,16 +291,13 @@ client.on('interactionCreate', async interaction => {
             let src = null;
             if (attachment) {
                 src = attachment.url;
-            } else if (url) {
-                src = url;
+            } else if (url && url.trim()) {
+                src = url.trim();
             }
-            if (!src) {
-                return interaction.reply({ content: 'يجب عليك إما وضع رابط الصورة أو رفع صورة!', ephemeral: true });
-            }
-            const isFullUrl = /^https?:\/\//i.test(src);
-            const isExistingFile = fs.existsSync(path.join(__dirname, src));
-            if (!isFullUrl && !isExistingFile) {
-                return interaction.reply({ content: 'القيمة المُدخلة ليست رابط صورة صحيح ولا ملف موجود في المشروع. ارفع الصورة أو ضع رابطاً كاملاً يبدأ بـ https://', ephemeral: true });
+            if (src) {
+                const isFullUrl = /^https?:\/\//i.test(src);
+                const isExistingFile = fs.existsSync(path.join(__dirname, src));
+                if (!isFullUrl && !isExistingFile) src = null;
             }
             const state = { type: 'separator', channels: new Set(), src };
             panels.set(interaction.user.id, state);
@@ -437,7 +436,10 @@ client.on('interactionCreate', async interaction => {
         if (interaction.customId === 'sep_apply') {
             if (!state || state.type !== 'separator') return;
             if (state.channels.size === 0) {
-                return interaction.reply({ content: 'اختر الرومات أولاً من القائمة.', ephemeral: true });
+                return interaction.reply({ content: 'اختر الشاتات أولاً من القائمة.', ephemeral: true });
+            }
+            if (!state.src) {
+                return interaction.reply({ content: 'اضغط زر «الصورة» وضع رابط صورة الفاصل قبل التشغيل.', ephemeral: true });
             }
             try {
                 for (const id of state.channels) {
@@ -482,6 +484,24 @@ client.on('interactionCreate', async interaction => {
                             .setStyle(TextInputStyle.Short)
                             .setRequired(true)
                             .setPlaceholder('مثال: 👍 ❤️ 😂')
+                    )
+                );
+            return interaction.showModal(modal);
+        }
+
+        if (interaction.customId === 'sep_image') {
+            if (!state || state.type !== 'separator') return;
+            const modal = new ModalBuilder()
+                .setCustomId('sep_image_modal')
+                .setTitle('صورة الفاصل')
+                .addComponents(
+                    new ActionRowBuilder().addComponents(
+                        new TextInputBuilder()
+                            .setCustomId('image_url')
+                            .setLabel('ضع رابط صورة الفاصل')
+                            .setStyle(TextInputStyle.Short)
+                            .setRequired(true)
+                            .setPlaceholder('https://example.com/image.png')
                     )
                 );
             return interaction.showModal(modal);
@@ -559,6 +579,24 @@ client.on('interactionCreate', async interaction => {
                 embeds: [panelEmbed(state)],
                 components: reactionRow()
             });
+            return;
+        }
+
+        if (interaction.customId === 'sep_image_modal') {
+            const state = panels.get(userId);
+            if (!state || state.type !== 'separator') return;
+
+            const value = interaction.fields.getTextInputValue('image_url').trim();
+            const isFullUrl = /^https?:\/\//i.test(value);
+            const isExistingFile = fs.existsSync(path.join(__dirname, value));
+            if (!isFullUrl && !isExistingFile) {
+                return interaction.reply({ content: 'رابط الصورة غير صحيح. ضع رابطاً كاملاً يبدأ بـ https://', ephemeral: true });
+            }
+            state.src = value;
+            await interaction.update({
+                embeds: [panelEmbed(state)],
+                components: separatorRow()
+            });
         }
         return;
     }
@@ -590,20 +628,10 @@ client.on('messageCreate', async message => {
             } else if (args[0]) {
                 src = args[0];
             }
-
-            if (!src) {
-                return message.reply(
-                    'أرفق صورة الفاصل مع الأمر، أو ضع رابطها بعده.\n' +
-                    'مثال: اكتب `-setup-separator` وأرفق الصورة في نفس الرسالة.'
-                );
-            }
-
-            const isFullUrl = /^https?:\/\//i.test(src);
-            const isExistingFile = fs.existsSync(path.join(__dirname, src));
-            if (!isFullUrl && !isExistingFile) {
-                return message.reply(
-                    'القيمة المُدخلة ليست رابط صورة صحيح ولا ملف موجود في المشروع. ارفع الصورة مع الأمر أو ضع رابطاً كاملاً يبدأ بـ https://'
-                );
+            if (src) {
+                const isFullUrl = /^https?:\/\//i.test(src);
+                const isExistingFile = fs.existsSync(path.join(__dirname, src));
+                if (!isFullUrl && !isExistingFile) src = null;
             }
 
             await sendSeparatorPanel(message.channel, message.author.id, src);
