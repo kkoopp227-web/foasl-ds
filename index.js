@@ -8,7 +8,7 @@ app.listen(port, () => console.log(`Dummy server listening at http://localhost:$
 
 const {
     Client, GatewayIntentBits, EmbedBuilder, REST, Routes,
-    ChannelSelectMenuBuilder, StringSelectMenuBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
+    ChannelSelectMenuBuilder, StringSelectMenuBuilder, RoleSelectMenuBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
     ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType,
     SlashCommandBuilder, PermissionsBitField
 } = require('discord.js');
@@ -92,6 +92,49 @@ function colorRoleSelectRow() {
         );
     return new ActionRowBuilder().addComponents(select);
 }
+
+// ---------- Grant-perms panel ----------
+function grantEmbed(state) {
+    const roles = state.roles;
+    return new EmbedBuilder()
+        .setColor('#2b2d31')
+        .setTitle('تحديد رولات صور / لايف')
+        .setDescription('اختر من القائمة الرولات المسموح لها كتابة (**صور** / **لايف**) ثم اضغط **حفظ**.')
+        .addFields({
+            name: 'الرولات المحددة',
+            value: roles.size > 0 ? [...roles].map(id => `<@&${id}>`).join(' ') : 'لا يوجد (سيتم الإعتماد على رول الأدمن ADMIN_ROLE_ID فقط)'
+        });
+}
+
+function grantSelectRow(state) {
+    const select = new RoleSelectMenuBuilder()
+        .setCustomId('grant_roles')
+        .setPlaceholder('اختر الرولات هنا')
+        .setMinValues(0)
+        .setMaxValues(25);
+    if (state.roles.size > 0) {
+        select.setDefaultValues([...state.roles]);
+    }
+    return new ActionRowBuilder().addComponents(select);
+}
+
+function grantActionRow() {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('grant_save')
+            .setLabel('حفظ')
+            .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+            .setCustomId('grant_clear')
+            .setLabel('مسح الكل')
+            .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+            .setCustomId('grant_cancel')
+            .setLabel('إلغاء')
+            .setStyle(ButtonStyle.Secondary)
+    );
+}
+// ---------- End grant-perms panel ----------
 
 async function assignColorRole(interaction, num) {
     const doc = await db.getColorRoles().catch(() => null);
@@ -230,27 +273,7 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('grant-perms')
-        .setDescription('تحديد الرولات المسموح لها كتابة (صور / لايف)')
-        .addRoleOption(option =>
-            option.setName('role1')
-                .setDescription('الرول الأول')
-                .setRequired(false))
-        .addRoleOption(option =>
-            option.setName('role2')
-                .setDescription('الرول الثاني (اختياري)')
-                .setRequired(false))
-        .addRoleOption(option =>
-            option.setName('role3')
-                .setDescription('الرول الثالث (اختياري)')
-                .setRequired(false))
-        .addRoleOption(option =>
-            option.setName('role4')
-                .setDescription('الرول الرابع (اختياري)')
-                .setRequired(false))
-        .addRoleOption(option =>
-            option.setName('role5')
-                .setDescription('الرول الخامس (اختياري)')
-                .setRequired(false))
+        .setDescription('اختيار الرولات المسموح لها كتابة (صور / لايف)')
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 
     new SlashCommandBuilder()
@@ -601,28 +624,13 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (name === 'grant-perms') {
-            const roles = [];
-            for (let i = 1; i <= 5; i++) {
-                const r = interaction.options.getRole(`role${i}`);
-                if (r) roles.push(r.id);
-            }
-            try {
-                await db.setGrantRoles(roles);
-                if (roles.length === 0) {
-                    return interaction.reply({
-                        content: 'تم مسح الرولات المسموحة. الآن كتابة (صور / لايف) مسموحة فقط لرول الأدمن (ADMIN_ROLE_ID).',
-                        ephemeral: true
-                    });
-                }
-                return interaction.reply({
-                    content: `تم التحديد، الرولات المسموح لها كتابة (صور / لايف):\n` +
-                        roles.map(r => `<@&${r}>`).join(' '),
-                    ephemeral: true
-                });
-            } catch (error) {
-                console.error(error);
-                return interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
-            }
+            const existing = await db.getGrantRoles().catch(() => []);
+            panels.set(userId, { type: 'grant', roles: new Set(existing) });
+            return interaction.reply({
+                embeds: [grantEmbed(panels.get(userId))],
+                components: [grantSelectRow(panels.get(userId)), grantActionRow()],
+                ephemeral: true
+            });
         }
 
         if (name === 'color-roles') {
@@ -720,6 +728,22 @@ client.on('interactionCreate', async interaction => {
         return;
     }
 
+    // Role selection (grant-perms)
+    if (interaction.isRoleSelectMenu()) {
+        if (interaction.customId === 'grant_roles') {
+            const state = panels.get(userId);
+            if (!state || state.type !== 'grant') return;
+
+            state.roles = new Set(interaction.values);
+            await interaction.update({
+                embeds: [grantEmbed(state)],
+                components: [grantSelectRow(state), grantActionRow()]
+            });
+            return;
+        }
+        return;
+    }
+
     // Channel selection updates
     if (interaction.isChannelSelectMenu()) {
         if (interaction.customId === 'react_channels') {
@@ -751,6 +775,46 @@ client.on('interactionCreate', async interaction => {
     // Buttons
     if (interaction.isButton()) {
         const state = panels.get(userId);
+
+        // ---------- Grant-perms buttons ----------
+        if (interaction.customId === 'grant_save' || interaction.customId === 'grant_clear' || interaction.customId === 'grant_cancel') {
+            const gState = panels.get(userId);
+            if (!gState || gState.type !== 'grant') return;
+
+            if (interaction.customId === 'grant_cancel') {
+                panels.delete(userId);
+                return interaction.reply({ content: 'تم الإلغاء.', ephemeral: true });
+            }
+
+            if (interaction.customId === 'grant_clear') {
+                gState.roles = new Set();
+                await interaction.update({
+                    embeds: [grantEmbed(gState)],
+                    components: [grantSelectRow(gState), grantActionRow()]
+                });
+                return;
+            }
+
+            try {
+                await db.setGrantRoles([...gState.roles]);
+                panels.delete(userId);
+                if (gState.roles.size === 0) {
+                    return interaction.reply({
+                        content: 'تم مسح الرولات المسموحة. الآن كتابة (صور / لايف) مسموحة فقط لرول الأدمن (ADMIN_ROLE_ID).',
+                        ephemeral: true
+                    });
+                }
+                return interaction.reply({
+                    content: `تم الحفظ، الرولات المسموح لها كتابة (صور / لايف):\n` +
+                        [...gState.roles].map(r => `<@&${r}>`).join(' '),
+                    ephemeral: true
+                });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
+            }
+        }
+        // ---------- End grant-perms buttons ----------
 
         // ---------- Room system ----------
         if (interaction.customId === 'room_create') {
