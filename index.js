@@ -8,10 +8,11 @@ app.listen(port, () => console.log(`Dummy server listening at http://localhost:$
 
 const {
     Client, GatewayIntentBits, EmbedBuilder, REST, Routes,
-    ChannelSelectMenuBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
+    ChannelSelectMenuBuilder, StringSelectMenuBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
     ModalBuilder, TextInputBuilder, TextInputStyle, ChannelType,
     SlashCommandBuilder, PermissionsBitField
 } = require('discord.js');
+const { PNG } = require('pngjs');
 const fs = require('fs');
 const path = require('path');
 const db = require('./database');
@@ -32,22 +33,93 @@ const COLOR_ROLE_COLORS = [
     0xe67e22, 0x1abc9c, 0x7f8c8d, 0x8e44ad, 0xc0392b
 ];
 
-function colorRoleRows() {
-    const rows = [];
-    for (let r = 0; r < 3; r++) {
-        const row = new ActionRowBuilder();
-        for (let c = 0; c < 5; c++) {
-            const num = r * 5 + c + 1;
-            row.addComponents(
-                new ButtonBuilder()
-                    .setCustomId(`color_${num}`)
-                    .setLabel(String(num))
-                    .setStyle(ButtonStyle.Primary)
-            );
+function parseHex(hex) {
+    if (typeof hex !== 'string') return null;
+    let h = hex.trim().replace(/^#/, '');
+    if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+    const n = parseInt(h, 16);
+    return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+}
+
+function makeColorBanner(bgHex) {
+    const width = 900;
+    const height = 240;
+    const bg = parseHex(bgHex) || [43, 45, 49];
+    const png = new PNG({ width, height });
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const idx = (width * y + x) * 4;
+            png.data[idx] = bg[0];
+            png.data[idx + 1] = bg[1];
+            png.data[idx + 2] = bg[2];
+            png.data[idx + 3] = 255;
         }
-        rows.push(row);
     }
-    return rows;
+
+    const barW = Math.floor(width / 15);
+    for (let i = 0; i < 15; i++) {
+        const c = COLOR_ROLE_COLORS[i];
+        const x0 = i * barW + 3;
+        const x1 = Math.min((i + 1) * barW - 3, width);
+        for (let y = 12; y < height - 12; y++) {
+            for (let x = x0; x < x1; x++) {
+                const idx = (width * y + x) * 4;
+                png.data[idx] = (c >> 16) & 0xff;
+                png.data[idx + 1] = (c >> 8) & 0xff;
+                png.data[idx + 2] = c & 0xff;
+                png.data[idx + 3] = 255;
+            }
+        }
+    }
+
+    return PNG.sync.write(png);
+}
+
+function colorRoleSelectRow() {
+    const select = new StringSelectMenuBuilder()
+        .setCustomId('color_num')
+        .setPlaceholder('اضغط هنا لاختيار اللون')
+        .setMinValues(1)
+        .setMaxValues(1)
+        .addOptions(
+            [...Array(15)].map((_, i) => ({
+                label: String(i + 1),
+                value: String(i + 1)
+            }))
+        );
+    return new ActionRowBuilder().addComponents(select);
+}
+
+async function assignColorRole(interaction, num) {
+    const doc = await db.getColorRoles().catch(() => null);
+    if (!doc || !doc.role_ids || !doc.role_ids[num - 1]) {
+        return interaction.reply({ content: 'لم يتم إعداد رولات الألوان بعد. اطلب من الأدمن تشغيل /color-roles.', ephemeral: true });
+    }
+
+    const role = interaction.guild.roles.cache.get(doc.role_ids[num - 1]);
+    if (!role) {
+        return interaction.reply({ content: 'الرول غير موجود، اطلب من الأدمن إعادة تشغيل /color-roles.', ephemeral: true });
+    }
+
+    try {
+        const member = interaction.member;
+        const hasThis = member.roles.cache.has(role.id);
+        const others = doc.role_ids.filter(id => id !== role.id && member.roles.cache.has(id));
+        if (others.length > 0) {
+            await member.roles.remove(others).catch(() => {});
+        }
+        if (hasThis) {
+            await member.roles.remove(role.id);
+            return interaction.reply({ content: `تم إزالة اللون ${num} منك.`, ephemeral: true });
+        }
+        await member.roles.add(role.id);
+        return interaction.reply({ content: `تم إعطاؤك لون ${num}.`, ephemeral: true });
+    } catch (error) {
+        console.error(error);
+        return interaction.reply({ content: 'حدث خطأ. تأكد أن رول البوت أعلى من رولات الألوان.', ephemeral: true });
+    }
 }
 
 function isAdminChannel(channelId) {
@@ -190,6 +262,10 @@ const commands = [
         .addStringOption(option =>
             option.setName('title')
                 .setDescription('نص عنوان اللوحة (اختياري)')
+                .setRequired(false))
+        .addStringOption(option =>
+            option.setName('background')
+                .setDescription('لون خلفية لوحة الصورة بالهكس مثل #2b2d31 (اختياري)')
                 .setRequired(false))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 ].map(c => c.toJSON());
@@ -567,15 +643,18 @@ client.on('interactionCreate', async interaction => {
 
                 await db.setColorRoles(ids, channel.id);
 
+                const banner = makeColorBanner(interaction.options.getString('background'));
                 const embed = new EmbedBuilder()
                     .setColor('#5865F2')
                     .setTitle(title)
-                    .setDescription(
-                        [...Array(15)].map((_, i) => `${i + 1}`).join(' | ') +
-                        '\n\nاضغط على الرقم لتحصل على اللون.'
-                    );
+                    .setImage('attachment://colors.png')
+                    .setDescription('اضغط على القائمة أدناه لاختيار رقم اللون.');
 
-                await channel.send({ embeds: [embed], components: colorRoleRows() });
+                await channel.send({
+                    embeds: [embed],
+                    components: [colorRoleSelectRow()],
+                    files: [{ attachment: banner, name: 'colors.png' }]
+                });
                 return interaction.reply({ content: `✅ تم تجهيز رولات الألوان (1-15) وإرسال لوحة الاختيار إلى ${channel}`, ephemeral: true });
             } catch (error) {
                 console.error(error);
@@ -587,6 +666,14 @@ client.on('interactionCreate', async interaction => {
     }
 
     const userId = interaction.user.id;
+
+    if (interaction.isStringSelectMenu()) {
+        if (interaction.customId === 'color_num') {
+            const num = parseInt(interaction.values[0], 10);
+            return assignColorRole(interaction, num);
+        }
+        return;
+    }
 
     // Channel selection updates
     if (interaction.isChannelSelectMenu()) {
@@ -618,37 +705,6 @@ client.on('interactionCreate', async interaction => {
 
     // Buttons
     if (interaction.isButton()) {
-        if (interaction.customId.startsWith('color_')) {
-            const num = parseInt(interaction.customId.replace('color_', ''), 10);
-            const doc = await db.getColorRoles().catch(() => null);
-            if (!doc || !doc.role_ids || !doc.role_ids[num - 1]) {
-                return interaction.reply({ content: 'لم يتم إعداد رولات الألوان بعد. اطلب من الأدمن تشغيل /color-roles.', ephemeral: true });
-            }
-
-            const role = interaction.guild.roles.cache.get(doc.role_ids[num - 1]);
-            if (!role) {
-                return interaction.reply({ content: 'الرول غير موجود، اطلب من الأدمن إعادة تشغيل /color-roles.', ephemeral: true });
-            }
-
-            try {
-                const member = interaction.member;
-                const hasThis = member.roles.cache.has(role.id);
-                const others = doc.role_ids.filter(id => id !== role.id && member.roles.cache.has(id));
-                if (others.length > 0) {
-                    await member.roles.remove(others).catch(() => {});
-                }
-                if (hasThis) {
-                    await member.roles.remove(role.id);
-                    return interaction.reply({ content: `تم إزالة اللون ${num} منك.`, ephemeral: true });
-                }
-                await member.roles.add(role.id);
-                return interaction.reply({ content: `تم إعطاؤك لون ${num}.`, ephemeral: true });
-            } catch (error) {
-                console.error(error);
-                return interaction.reply({ content: 'حدث خطأ. تأكد أن رول البوت أعلى من رولات الألوان.', ephemeral: true });
-            }
-        }
-
         const state = panels.get(userId);
 
         if (interaction.customId === 'autodel_duration') {
