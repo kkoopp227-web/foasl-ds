@@ -26,6 +26,30 @@ const client = new Client({
 
 const PREFIX = process.env.PREFIX || '-';
 
+const COLOR_ROLE_COLORS = [
+    0xff6b6b, 0xff8e53, 0xffc857, 0x2ecc71, 0x5eead4,
+    0x5dade2, 0x9b59b6, 0xff7eb6, 0x95a5a6, 0xf1c40f,
+    0xe67e22, 0x1abc9c, 0x7f8c8d, 0x8e44ad, 0xc0392b
+];
+
+function colorRoleRows() {
+    const rows = [];
+    for (let r = 0; r < 3; r++) {
+        const row = new ActionRowBuilder();
+        for (let c = 0; c < 5; c++) {
+            const num = r * 5 + c + 1;
+            row.addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`color_${num}`)
+                    .setLabel(String(num))
+                    .setStyle(ButtonStyle.Primary)
+            );
+        }
+        rows.push(row);
+    }
+    return rows;
+}
+
 function isAdminChannel(channelId) {
     if (process.env.ADMIN_CHANNEL_ID && channelId !== process.env.ADMIN_CHANNEL_ID) {
         return false;
@@ -153,6 +177,19 @@ const commands = [
         .addRoleOption(option =>
             option.setName('role5')
                 .setDescription('الرول الخامس (اختياري)')
+                .setRequired(false))
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+    new SlashCommandBuilder()
+        .setName('color-roles')
+        .setDescription('إعداد رولات الألوان من 1 إلى 15 في شات')
+        .addChannelOption(option =>
+            option.setName('channel')
+                .setDescription('الشات الذي ستُرسل فيه لوحة الألوان')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('title')
+                .setDescription('نص عنوان اللوحة (اختياري)')
                 .setRequired(false))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 ].map(c => c.toJSON());
@@ -492,6 +529,60 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
+        if (name === 'color-roles') {
+            const channel = interaction.options.getChannel('channel');
+            const title = interaction.options.getString('title') || 'اختر لونك';
+
+            try {
+                const existing = await db.getColorRoles().catch(() => null);
+                const existingIds = existing ? existing.role_ids : [];
+
+                const ids = [];
+                for (let i = 1; i <= 15; i++) {
+                    let role = null;
+                    if (existingIds[i - 1]) {
+                        role = await interaction.guild.roles.fetch(existingIds[i - 1]).catch(() => null);
+                    }
+                    if (!role) {
+                        role = await interaction.guild.roles.create({
+                            name: String(i),
+                            color: COLOR_ROLE_COLORS[i - 1],
+                            permissions: [],
+                            reason: 'Color role'
+                        });
+                    } else {
+                        await role.edit({ name: String(i), color: COLOR_ROLE_COLORS[i - 1] }).catch(() => {});
+                    }
+                    ids.push(role.id);
+                }
+
+                // Place roles 1..15 directly under the bot's highest role (1 closest to bot)
+                const botHighestRole = interaction.guild.members.me.roles.highest;
+                for (let i = 1; i <= 15; i++) {
+                    const role = interaction.guild.roles.cache.get(ids[i - 1]);
+                    if (role) {
+                        await role.setPosition(botHighestRole.position - i).catch(() => {});
+                    }
+                }
+
+                await db.setColorRoles(ids, channel.id);
+
+                const embed = new EmbedBuilder()
+                    .setColor('#5865F2')
+                    .setTitle(title)
+                    .setDescription(
+                        [...Array(15)].map((_, i) => `${i + 1}`).join(' | ') +
+                        '\n\nاضغط على الرقم لتحصل على اللون.'
+                    );
+
+                await channel.send({ embeds: [embed], components: colorRoleRows() });
+                return interaction.reply({ content: `✅ تم تجهيز رولات الألوان (1-15) وإرسال لوحة الاختيار إلى ${channel}`, ephemeral: true });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: 'حدث خطأ أثناء إعداد رولات الألوان. تأكد أن رول البوت عنده صلاحية Manage Roles وأنه أعلى من الرولات.', ephemeral: true });
+            }
+        }
+
         return;
     }
 
@@ -527,6 +618,37 @@ client.on('interactionCreate', async interaction => {
 
     // Buttons
     if (interaction.isButton()) {
+        if (interaction.customId.startsWith('color_')) {
+            const num = parseInt(interaction.customId.replace('color_', ''), 10);
+            const doc = await db.getColorRoles().catch(() => null);
+            if (!doc || !doc.role_ids || !doc.role_ids[num - 1]) {
+                return interaction.reply({ content: 'لم يتم إعداد رولات الألوان بعد. اطلب من الأدمن تشغيل /color-roles.', ephemeral: true });
+            }
+
+            const role = interaction.guild.roles.cache.get(doc.role_ids[num - 1]);
+            if (!role) {
+                return interaction.reply({ content: 'الرول غير موجود، اطلب من الأدمن إعادة تشغيل /color-roles.', ephemeral: true });
+            }
+
+            try {
+                const member = interaction.member;
+                const hasThis = member.roles.cache.has(role.id);
+                const others = doc.role_ids.filter(id => id !== role.id && member.roles.cache.has(id));
+                if (others.length > 0) {
+                    await member.roles.remove(others).catch(() => {});
+                }
+                if (hasThis) {
+                    await member.roles.remove(role.id);
+                    return interaction.reply({ content: `تم إزالة اللون ${num} منك.`, ephemeral: true });
+                }
+                await member.roles.add(role.id);
+                return interaction.reply({ content: `تم إعطاؤك لون ${num}.`, ephemeral: true });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: 'حدث خطأ. تأكد أن رول البوت أعلى من رولات الألوان.', ephemeral: true });
+            }
+        }
+
         const state = panels.get(userId);
 
         if (interaction.customId === 'autodel_duration') {

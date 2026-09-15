@@ -38,6 +38,13 @@ const GrantPermSchema = new mongoose.Schema({
 });
 const GrantPerm = mongoose.model('GrantPerm', GrantPermSchema);
 
+const ColorRolesSchema = new mongoose.Schema({
+    key: { type: String, required: true, unique: true, default: 'default' },
+    role_ids: [String],
+    channel_id: String
+});
+const ColorRoles = mongoose.model('ColorRoles', ColorRolesSchema);
+
 // Helper functions for Separators
 async function getSeparator(channelId) {
     return await Separator.findOne({ channel_id: channelId });
@@ -114,6 +121,19 @@ async function setGrantRoles(roleIds) {
     );
 }
 
+// Helper functions for Color Roles
+async function getColorRoles() {
+    return await ColorRoles.findOne({ key: 'default' });
+}
+
+async function setColorRoles(roleIds, channelId) {
+    await ColorRoles.findOneAndUpdate(
+        { key: 'default' },
+        { role_ids: roleIds, channel_id: channelId },
+        { upsert: true, new: true }
+    );
+}
+
 module.exports = {
     getSeparator,
     setSeparator,
@@ -127,5 +147,7 @@ module.exports = {
     setAutoDelete,
     removeAutoDelete,
     getGrantRoles,
-    setGrantRoles
+    setGrantRoles,
+    getColorRoles,
+    setColorRoles
 };
