@@ -135,6 +135,16 @@ const commands = [
 // ---------- Interactive panel state (key: user id) ----------
 const panels = new Map(); // userId -> { type, channels:Set, duration:number|null, src:string|null }
 
+function buildAlbumPayload(text, imageUrls) {
+    const payload = { content: (text && text.trim()) || null };
+    if (imageUrls.length > 0) {
+        payload.embeds = imageUrls.map(u =>
+            new EmbedBuilder().setColor('#2b2d31').setImage(u)
+        );
+    }
+    return payload;
+}
+
 function panelEmbed(state) {
     const embed = new EmbedBuilder().setColor('#2b2d31');
 
@@ -412,12 +422,11 @@ client.on('interactionCreate', async interaction => {
             }
 
             try {
-                const payload = { content: (text && text.trim()) || null };
-                if (files.length > 0) payload.files = files;
+                const payload = buildAlbumPayload(text, files);
                 const sent = await channel.send(payload);
                 return interaction.reply({
                     content: `✅ تم الإرسال إلى ${channel}` +
-                        (files.length ? ` مع ${files.length} صورة (بالترتيب)` : '') +
+                        (files.length ? ` مع ${files.length} صورة (أول وحدة فوق واللي بعدها تحت)` : '') +
                         (sent.id ? `\nرابط الرسالة: https://discord.com/channels/${channel.guildId}/${channel.id}/${sent.id}` : ''),
                     ephemeral: true
                 });
@@ -712,12 +721,11 @@ client.on('messageCreate', async message => {
             }
 
             try {
-                const payload = { content: text || null };
-                if (files.length > 0) payload.files = files;
+                const payload = buildAlbumPayload(text, files);
                 await target.send(payload);
                 return message.reply(
                     `✅ تم الإرسال إلى ${target}` +
-                    (files.length ? ` مع ${files.length} صورة (بالترتيب)` : '') +
+                    (files.length ? ` مع ${files.length} صورة (أول وحدة فوق واللي بعدها تحت)` : '') +
                     (text ? `\nالنص: ${text}` : '')
                 );
             } catch (error) {
