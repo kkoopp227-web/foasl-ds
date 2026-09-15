@@ -17,6 +17,16 @@ const fs = require('fs');
 const path = require('path');
 const db = require('./database');
 
+// Keep the process alive: never let a silent error kill the bot
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled rejection:');
+    console.error(reason);
+});
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught exception:');
+    console.error(error);
+});
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
