@@ -38,6 +38,11 @@ function isAllowedGuild(guildId) {
     return String(process.env.GUILD_ID) === String(guildId);
 }
 
+function hasAdminRole(member) {
+    if (!process.env.ADMIN_ROLE_ID) return true;
+    return !!member && !!member.roles && member.roles.cache.has(process.env.ADMIN_ROLE_ID);
+}
+
 const commands = [
     new SlashCommandBuilder()
         .setName('setup-separator')
@@ -91,6 +96,39 @@ const commands = [
             option.setName('channel')
                 .setDescription('الروم')
                 .setRequired(true))
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+    new SlashCommandBuilder()
+        .setName('send')
+        .setDescription('إرسال نص و/أو صور إلى شات')
+        .addChannelOption(option =>
+            option.setName('channel')
+                .setDescription('الشات الذي سيُرسل إليه')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('text')
+                .setDescription('النص المراد إرساله (اختياري)')
+                .setRequired(false))
+        .addAttachmentOption(option =>
+            option.setName('image1')
+                .setDescription('الصورة الأولى (اختياري)')
+                .setRequired(false))
+        .addAttachmentOption(option =>
+            option.setName('image2')
+                .setDescription('الصورة الثانية (اختياري)')
+                .setRequired(false))
+        .addAttachmentOption(option =>
+            option.setName('image3')
+                .setDescription('الصورة الثالثة (اختياري)')
+                .setRequired(false))
+        .addAttachmentOption(option =>
+            option.setName('image4')
+                .setDescription('الصورة الرابعة (اختياري)')
+                .setRequired(false))
+        .addAttachmentOption(option =>
+            option.setName('image5')
+                .setDescription('الصورة الخامسة (اختياري)')
+                .setRequired(false))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 ].map(c => c.toJSON());
 
@@ -280,6 +318,9 @@ client.on('interactionCreate', async interaction => {
         if (!isAdminChannel(interaction.channel.id)) {
             return interaction.reply({ content: 'عذراً، لا يمكنك استخدام أوامر التحكم إلا في الشات المخصص لها.', ephemeral: true });
         }
+        if (!hasAdminRole(interaction.member)) {
+            return interaction.reply({ content: 'عذراً، لا تملك الرول المطلوب لاستخدام هذه الأوامر.', ephemeral: true });
+        }
 
         const name = interaction.commandName;
 
@@ -354,6 +395,35 @@ client.on('interactionCreate', async interaction => {
             } catch (error) {
                 console.error(error);
                 return interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
+            }
+        }
+
+        if (name === 'send') {
+            const channel = interaction.options.getChannel('channel');
+            const text = interaction.options.getString('text');
+            const files = [];
+            for (let i = 1; i <= 5; i++) {
+                const att = interaction.options.getAttachment(`image${i}`);
+                if (att) files.push(att.url);
+            }
+
+            if ((!text || !text.trim()) && files.length === 0) {
+                return interaction.reply({ content: 'اكتب نصاً أو ارفع صورة واحدة على الأقل.', ephemeral: true });
+            }
+
+            try {
+                const payload = { content: (text && text.trim()) || null };
+                if (files.length > 0) payload.files = files;
+                const sent = await channel.send(payload);
+                return interaction.reply({
+                    content: `✅ تم الإرسال إلى ${channel}` +
+                        (files.length ? ` مع ${files.length} صورة (بالترتيب)` : '') +
+                        (sent.id ? `\nرابط الرسالة: https://discord.com/channels/${channel.guildId}/${channel.id}/${sent.id}` : ''),
+                    ephemeral: true
+                });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: `حدث خطأ أثناء الإرسال. تأكد أن البوت عنده صلاحية الكتابة في ${channel}`, ephemeral: true });
             }
         }
 
@@ -622,6 +692,39 @@ client.on('messageCreate', async message => {
         if (!isAdminChannel(message.channel.id)) {
             return message.reply('عذراً، لا يمكنك استخدام الأوامر إلا في الشات المخصص لها.');
         }
+        if (!hasAdminRole(message.member)) {
+            return message.reply('عذراً، لا تملك الرول المطلوب لاستخدام هذه الأوامر.');
+        }
+
+        if (name === 'send') {
+            const target = message.mentions.channels.first();
+            if (!target) {
+                return message.reply('يجب أن تذكر الشات أولاً: `-send #الشات النص المكتوب`');
+            }
+
+            const text = args
+                .filter(a => !/^<#\d+>$/.test(a))
+                .join(' ');
+            const files = message.attachments.map(a => a.url);
+
+            if (!text && files.length === 0) {
+                return message.reply('اكتب نصاً أو ارفع صورة واحدة على الأقل لإرسالها.');
+            }
+
+            try {
+                const payload = { content: text || null };
+                if (files.length > 0) payload.files = files;
+                await target.send(payload);
+                return message.reply(
+                    `✅ تم الإرسال إلى ${target}` +
+                    (files.length ? ` مع ${files.length} صورة (بالترتيب)` : '') +
+                    (text ? `\nالنص: ${text}` : '')
+                );
+            } catch (error) {
+                console.error(error);
+                return message.reply(`حدث خطأ أثناء الإرسال. تأكد أن البوت عنده صلاحية الكتابة في ${target}`);
+            }
+        }
 
         if (name === 'auto-delete') {
             await sendAutoDeletePanel(message.channel, message.author.id);
@@ -649,7 +752,8 @@ client.on('messageCreate', async message => {
         return message.reply(
             'الأوامر المتاحة:\n' +
             `- \`${PREFIX}auto-delete\` → لوحة الحذف التلقائي (اختر الرومات + المدة + تشغيل)\n` +
-            `- \`${PREFIX}setup-separator\` → أرفق صورة أو رابطاً، ثم اختر الرومات`
+            `- \`${PREFIX}setup-separator\` → لوحة الفاصل (اختر الشاتات + الصورة + تشغيل)\n` +
+            `- \`${PREFIX}send #الشات النص\` → يرسل نص وصور في شات (ارفق الصور بالترتيب مع الأمر)`
         );
     }
 
