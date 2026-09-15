@@ -864,7 +864,11 @@ client.on('messageCreate', async message => {
 
             try {
                 const member = await message.guild.members.fetch(targetUser.id);
-                await member.roles.add(roleId);
+                if (member.roles.cache.has(roleId)) {
+                    await member.roles.remove(roleId);
+                } else {
+                    await member.roles.add(roleId);
+                }
                 return message.react('✅').catch(() => {});
             } catch (error) {
                 console.error('Role grant error:', error.message);
