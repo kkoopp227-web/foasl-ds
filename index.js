@@ -94,45 +94,27 @@ function colorRoleSelectRow() {
 }
 
 // ---------- Grant-perms panel ----------
-function grantEmbed(state) {
-    const roles = state.roles;
+function grantEmbed(roles, savedMsg) {
     return new EmbedBuilder()
         .setColor('#2b2d31')
         .setTitle('تحديد رولات صور / لايف')
-        .setDescription('اختر من القائمة الرولات المسموح لها كتابة (**صور** / **لايف**) ثم اضغط **حفظ**.')
+        .setDescription(savedMsg || 'اختر من القائمة الرولات المسموح لها كتابة (**صور** / **لايف**).\n**الاختيار يُحفظ تلقائياً فوراً.**')
         .addFields({
             name: 'الرولات المحددة',
-            value: roles.size > 0 ? [...roles].map(id => `<@&${id}>`).join(' ') : 'لا يوجد (سيتم الإعتماد على رول الأدمن ADMIN_ROLE_ID فقط)'
+            value: roles.length > 0 ? roles.map(id => `<@&${id}>`).join(' ') : 'لا يوجد (سيتم الإعتماد على رول الأدمن ADMIN_ROLE_ID فقط)'
         });
 }
 
-function grantSelectRow(state) {
+function grantSelectRow(roles) {
     const select = new RoleSelectMenuBuilder()
         .setCustomId('grant_roles')
         .setPlaceholder('اختر الرولات هنا')
         .setMinValues(0)
         .setMaxValues(25);
-    if (state.roles.size > 0) {
-        select.setDefaultValues([...state.roles]);
+    if (roles.length > 0) {
+        select.setDefaultValues(roles);
     }
     return new ActionRowBuilder().addComponents(select);
-}
-
-function grantActionRow() {
-    return new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('grant_save')
-            .setLabel('حفظ')
-            .setStyle(ButtonStyle.Success),
-        new ButtonBuilder()
-            .setCustomId('grant_clear')
-            .setLabel('مسح الكل')
-            .setStyle(ButtonStyle.Danger),
-        new ButtonBuilder()
-            .setCustomId('grant_cancel')
-            .setLabel('إلغاء')
-            .setStyle(ButtonStyle.Secondary)
-    );
 }
 // ---------- End grant-perms panel ----------
 
@@ -478,6 +460,36 @@ client.once('ready', async () => {
         console.error(error);
     }
 
+    // Load tracked temporary rooms from DB (survives bot restarts)
+    try {
+        const savedRooms = await db.getAllRooms().catch(() => []);
+        for (const r of savedRooms) {
+            rooms.set(r.channel_id, { ownerId: r.owner_id, panelMessageId: r.panel_message_id || null });
+        }
+        console.log(`Loaded ${savedRooms.length} tracked room(s).`);
+
+        // Rooms that were already empty when the bot started: apply the same 5s rule
+        for (const r of savedRooms) {
+            const ch = await client.channels.fetch(r.channel_id).catch(() => null);
+            if (!ch) {
+                rooms.delete(r.channel_id);
+                await db.removeRoom(r.channel_id).catch(() => {});
+                continue;
+            }
+            if (ch.members.size === 0) {
+                setTimeout(async () => {
+                    const c = await client.channels.fetch(r.channel_id).catch(() => null);
+                    if (!c || c.members.size !== 0) return;
+                    rooms.delete(r.channel_id);
+                    await db.removeRoom(r.channel_id).catch(() => {});
+                    await c.delete('Room empty').catch(() => {});
+                }, 5000);
+            }
+        }
+    } catch (error) {
+        console.error('Error loading rooms:', error.message);
+    }
+
     // Auto-delete sweep every 60 seconds
     setInterval(async () => {
         try {
@@ -625,10 +637,9 @@ client.on('interactionCreate', async interaction => {
 
         if (name === 'grant-perms') {
             const existing = await db.getGrantRoles().catch(() => []);
-            panels.set(userId, { type: 'grant', roles: new Set(existing) });
             return interaction.reply({
-                embeds: [grantEmbed(panels.get(userId))],
-                components: [grantSelectRow(panels.get(userId)), grantActionRow()],
+                embeds: [grantEmbed(existing, null)],
+                components: [grantSelectRow(existing)],
                 ephemeral: true
             });
         }
@@ -728,17 +739,20 @@ client.on('interactionCreate', async interaction => {
         return;
     }
 
-    // Role selection (grant-perms)
+    // Role selection (grant-perms) — saves instantly on every selection
     if (interaction.isRoleSelectMenu()) {
         if (interaction.customId === 'grant_roles') {
-            const state = panels.get(userId);
-            if (!state || state.type !== 'grant') return;
-
-            state.roles = new Set(interaction.values);
-            await interaction.update({
-                embeds: [grantEmbed(state)],
-                components: [grantSelectRow(state), grantActionRow()]
-            });
+            try {
+                const selected = interaction.values;
+                await db.setGrantRoles(selected);
+                await interaction.update({
+                    embeds: [grantEmbed(selected, '✅ تم الحفظ تلقائياً')],
+                    components: [grantSelectRow(selected)]
+                });
+            } catch (error) {
+                console.error('grant-perms select error:', error);
+                await interaction.reply({ content: 'حدث خطأ أثناء الحفظ. جرب مرة ثانية.', ephemeral: true }).catch(() => {});
+            }
             return;
         }
         return;
@@ -775,46 +789,6 @@ client.on('interactionCreate', async interaction => {
     // Buttons
     if (interaction.isButton()) {
         const state = panels.get(userId);
-
-        // ---------- Grant-perms buttons ----------
-        if (interaction.customId === 'grant_save' || interaction.customId === 'grant_clear' || interaction.customId === 'grant_cancel') {
-            const gState = panels.get(userId);
-            if (!gState || gState.type !== 'grant') return;
-
-            if (interaction.customId === 'grant_cancel') {
-                panels.delete(userId);
-                return interaction.reply({ content: 'تم الإلغاء.', ephemeral: true });
-            }
-
-            if (interaction.customId === 'grant_clear') {
-                gState.roles = new Set();
-                await interaction.update({
-                    embeds: [grantEmbed(gState)],
-                    components: [grantSelectRow(gState), grantActionRow()]
-                });
-                return;
-            }
-
-            try {
-                await db.setGrantRoles([...gState.roles]);
-                panels.delete(userId);
-                if (gState.roles.size === 0) {
-                    return interaction.reply({
-                        content: 'تم مسح الرولات المسموحة. الآن كتابة (صور / لايف) مسموحة فقط لرول الأدمن (ADMIN_ROLE_ID).',
-                        ephemeral: true
-                    });
-                }
-                return interaction.reply({
-                    content: `تم الحفظ، الرولات المسموح لها كتابة (صور / لايف):\n` +
-                        [...gState.roles].map(r => `<@&${r}>`).join(' '),
-                    ephemeral: true
-                });
-            } catch (error) {
-                console.error(error);
-                return interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
-            }
-        }
-        // ---------- End grant-perms buttons ----------
 
         // ---------- Room system ----------
         if (interaction.customId === 'room_create') {
@@ -892,6 +866,7 @@ client.on('interactionCreate', async interaction => {
                 });
 
                 rooms.set(newRoom.id, { ownerId: member.id, panelMessageId: restRes.id });
+                await db.setRoom(newRoom.id, member.id, restRes.id).catch(() => {});
 
                 return interaction.editReply({ content: '🔊 تم إنشاء رومك وسحبك إليه تلقائياً. لوحة التحكم صارت في شات الروم.' });
             } catch (error) {
@@ -1193,30 +1168,41 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// ---------- Room auto-lock when empty ----------
+// ---------- Room auto-delete when empty ----------
 client.on('voiceStateUpdate', async (oldState, newState) => {
     const guildId = (newState.guild && newState.guild.id) || (oldState.guild && oldState.guild.id);
     if (!isAllowedGuild(guildId)) return;
 
     const leftChId = oldState.channelId;
-    if (!leftChId || !rooms.has(leftChId)) return;
+    if (!leftChId) return;
+
+    // Tracked either in memory or (if bot restarted) in the DB
+    const isTracked = rooms.has(leftChId) || (await db.getRoom(leftChId).catch(() => null));
+    if (!isTracked) return;
 
     setTimeout(async () => {
         try {
             const ch = await oldState.guild.channels.fetch(leftChId).catch(() => null);
-            if (!ch || !rooms.has(leftChId)) return; // deleted or no longer managed
+            if (!ch) return; // already deleted
 
             if (ch.members.size === 0) {
-                await ch.permissionOverwrites.edit(oldState.guild.roles.everyone.id, { Connect: false }).catch(() => {});
-                const room = rooms.get(leftChId);
-                if (room) {
-                    await ch.permissionOverwrites.edit(room.ownerId, { Connect: true, ViewChannel: true }).catch(() => {});
-                }
+                rooms.delete(leftChId);
+                await db.removeRoom(leftChId).catch(() => {});
+                await ch.delete('Room empty for 5 seconds').catch(() => {});
             }
         } catch (error) {
             console.error(error);
         }
     }, 5000);
+});
+
+// Clean DB record if a tracked room is deleted manually
+client.on('channelDelete', async channel => {
+    if (!isAllowedGuild(channel.guildId)) return;
+    if (rooms.has(channel.id)) {
+        rooms.delete(channel.id);
+        await db.removeRoom(channel.id).catch(() => {});
+    }
 });
 
 // ---------- Prefix commands ----------

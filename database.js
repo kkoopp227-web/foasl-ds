@@ -45,6 +45,14 @@ const ColorRolesSchema = new mongoose.Schema({
 });
 const ColorRoles = mongoose.model('ColorRoles', ColorRolesSchema);
 
+const RoomSchema = new mongoose.Schema({
+    channel_id: { type: String, required: true, unique: true },
+    owner_id: { type: String, required: true },
+    panel_message_id: String,
+    created_at: { type: Date, default: Date.now }
+});
+const Room = mongoose.model('Room', RoomSchema);
+
 // Helper functions for Separators
 async function getSeparator(channelId) {
     return await Separator.findOne({ channel_id: channelId });
@@ -134,6 +142,27 @@ async function setColorRoles(roleIds, channelId) {
     );
 }
 
+// Helper functions for temporary Rooms
+async function getRoom(channelId) {
+    return await Room.findOne({ channel_id: channelId });
+}
+
+async function getAllRooms() {
+    return await Room.find({});
+}
+
+async function setRoom(channelId, ownerId, panelMessageId) {
+    await Room.findOneAndUpdate(
+        { channel_id: channelId },
+        { owner_id: ownerId, panel_message_id: panelMessageId },
+        { upsert: true, new: true }
+    );
+}
+
+async function removeRoom(channelId) {
+    await Room.deleteOne({ channel_id: channelId });
+}
+
 module.exports = {
     getSeparator,
     setSeparator,
@@ -149,5 +178,9 @@ module.exports = {
     getGrantRoles,
     setGrantRoles,
     getColorRoles,
-    setColorRoles
+    setColorRoles,
+    getRoom,
+    getAllRooms,
+    setRoom,
+    removeRoom
 };
