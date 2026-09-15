@@ -135,14 +135,21 @@ const commands = [
 // ---------- Interactive panel state (key: user id) ----------
 const panels = new Map(); // userId -> { type, channels:Set, duration:number|null, src:string|null }
 
-function buildAlbumPayload(text, imageUrls) {
-    const payload = { content: (text && text.trim()) || null };
-    if (imageUrls.length > 0) {
-        payload.embeds = imageUrls.map(u =>
-            new EmbedBuilder().setColor('#2b2d31').setImage(u)
-        );
+async function sendBareImages(channel, text, imageUrls) {
+    const cleanText = (text && text.trim()) || null;
+
+    if (imageUrls.length === 0) {
+        return await channel.send({ content: cleanText });
     }
-    return payload;
+
+    let firstMessage = null;
+    for (let i = 0; i < imageUrls.length; i++) {
+        const payload = { files: [imageUrls[i]] };
+        if (i === 0) payload.content = cleanText || null;
+        const msg = await channel.send(payload);
+        if (i === 0) firstMessage = msg;
+    }
+    return firstMessage;
 }
 
 function panelEmbed(state) {
@@ -422,12 +429,11 @@ client.on('interactionCreate', async interaction => {
             }
 
             try {
-                const payload = buildAlbumPayload(text, files);
-                const sent = await channel.send(payload);
+                const sent = await sendBareImages(channel, text, files);
                 return interaction.reply({
                     content: `✅ تم الإرسال إلى ${channel}` +
-                        (files.length ? ` مع ${files.length} صورة (أول وحدة فوق واللي بعدها تحت)` : '') +
-                        (sent.id ? `\nرابط الرسالة: https://discord.com/channels/${channel.guildId}/${channel.id}/${sent.id}` : ''),
+                        (files.length ? ` مع ${files.length} صورة (أول وحدة فوق واللي بعدها تحت، بدون مربعات)` : '') +
+                        (sent && sent.id ? `\nرابط الرسالة: https://discord.com/channels/${channel.guildId}/${channel.id}/${sent.id}` : ''),
                     ephemeral: true
                 });
             } catch (error) {
@@ -721,11 +727,10 @@ client.on('messageCreate', async message => {
             }
 
             try {
-                const payload = buildAlbumPayload(text, files);
-                await target.send(payload);
+                await sendBareImages(target, text, files);
                 return message.reply(
                     `✅ تم الإرسال إلى ${target}` +
-                    (files.length ? ` مع ${files.length} صورة (أول وحدة فوق واللي بعدها تحت)` : '') +
+                    (files.length ? ` مع ${files.length} صورة (أول وحدة فوق واللي بعدها تحت، بدون مربعات)` : '') +
                     (text ? `\nالنص: ${text}` : '')
                 );
             } catch (error) {
