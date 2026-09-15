@@ -22,6 +22,7 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildVoiceStates,
     ],
 });
 
@@ -280,12 +281,17 @@ const commands = [
             option.setName('title')
                 .setDescription('نص عنوان اللوحة (اختياري)')
                 .setRequired(false))
+        .addChannelOption(option =>
+            option.setName('category')
+                .setDescription('المجلد (الكاتاجوري) الذي تُنشأ فيه الرومات الصوتية')
+                .setRequired(false))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 ].map(c => c.toJSON());
 
 // ---------- Interactive panel state (key: user id) ----------
 const panels = new Map(); // userId -> { type, channels:Set, duration:number|null, src:string|null }
 const rooms = new Map(); // voiceChannelId -> { ownerId, panelMessageId }
+const panelCategories = new Map(); // panelMessageId -> categoryId
 
 async function sendBareImages(channel, text, imageUrls) {
     const cleanText = (text && text.trim()) || null;
@@ -679,6 +685,7 @@ client.on('interactionCreate', async interaction => {
         if (name === 'room-panel') {
             const channel = interaction.options.getChannel('channel');
             const title = interaction.options.getString('title') || 'إنشاء روم';
+            const category = interaction.options.getChannel('category');
 
             const embed = new EmbedBuilder()
                 .setColor('#5865F2')
@@ -693,7 +700,10 @@ client.on('interactionCreate', async interaction => {
                         .setStyle(ButtonStyle.Success)
                 );
 
-            await channel.send({ embeds: [embed], components: [createRow] });
+            const msg = await channel.send({ embeds: [embed], components: [createRow] });
+            if (category && category.id) {
+                panelCategories.set(msg.id, category.id);
+            }
             return interaction.reply({ content: `✅ تم إرسال لوحة إنشاء الرومات إلى ${channel}`, ephemeral: true });
         }
 
@@ -745,14 +755,38 @@ client.on('interactionCreate', async interaction => {
         // ---------- Room system ----------
         if (interaction.customId === 'room_create') {
             const member = interaction.member;
-            if (!member.voice || !member.voice.channelId) {
-                return interaction.reply({ content: '⚠️ يجب أن تكون داخل أي روم صوتي بالسيرفر أولاً ثم اضغط إنشاء روم.', ephemeral: true });
+            await interaction.deferReply({ ephemeral: true });
+
+            const findVoice = () =>
+                (member.voice && member.voice.channelId) ||
+                interaction.guild.voiceStates.cache.get(userId)?.channelId;
+
+            let vch = findVoice();
+            if (!vch) {
+                for (let i = 0; i < 6; i++) {
+                    await new Promise(r => setTimeout(r, 500));
+                    vch = findVoice();
+                    if (vch) break;
+                }
+            }
+            if (!vch) {
+                return interaction.editReply({ content: '⚠️ أنت مو داخل أي روم صوتي. ادخل أي روم صوتي بالسيرفر ثم اضغط إنشاء روم.' });
+            }
+
+            // Resolve category chosen in the panel (if any)
+            let parentId;
+            const catId = panelCategories.get(interaction.message?.id);
+            if (catId) {
+                const cat = interaction.guild.channels.cache.get(catId) ||
+                    (await interaction.guild.channels.fetch(catId).catch(() => null));
+                if (cat && cat.type === ChannelType.GuildCategory) parentId = cat.id;
             }
 
             try {
                 const newRoom = await interaction.guild.channels.create({
                     name: `room-${Math.random().toString(36).slice(2, 6)}`,
                     type: ChannelType.GuildVoice,
+                    parent: parentId,
                     permissionOverwrites: [
                         {
                             id: interaction.guild.roles.everyone.id,
@@ -795,10 +829,10 @@ client.on('interactionCreate', async interaction => {
 
                 rooms.set(newRoom.id, { ownerId: member.id, panelMessageId: restRes.id });
 
-                return interaction.reply({ content: '🔊 تم إنشاء رومك وسحبك إليه تلقائياً. لوحة التحكم صارت في شات الروم.', ephemeral: true });
+                return interaction.editReply({ content: '🔊 تم إنشاء رومك وسحبك إليه تلقائياً. لوحة التحكم صارت في شات الروم.' });
             } catch (error) {
                 console.error(error);
-                return interaction.reply({ content: 'حدث خطأ أثناء إنشاء الروم. تأكد أن البوت عنده صلاحية إنشاء القنوات الصوتية.', ephemeral: true });
+                return interaction.editReply({ content: 'حدث خطأ أثناء إنشاء الروم. تأكد أن البوت عنده صلاحية إنشاء القنوات الصوتية في هذا المجلد.' });
             }
         }
 
