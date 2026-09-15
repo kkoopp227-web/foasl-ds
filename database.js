@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+﻿const mongoose = require('mongoose');
 
 // Connect to MongoDB
 if (!process.env.MONGO_URI) {
@@ -31,6 +31,12 @@ const AutoDeleteSchema = new mongoose.Schema({
 const Separator = mongoose.model('Separator', SeparatorSchema);
 const Reaction = mongoose.model('Reaction', ReactionSchema);
 const AutoDelete = mongoose.model('AutoDelete', AutoDeleteSchema);
+
+const GrantPermSchema = new mongoose.Schema({
+    key: { type: String, required: true, unique: true, default: 'default' },
+    role_ids: [String]
+});
+const GrantPerm = mongoose.model('GrantPerm', GrantPermSchema);
 
 // Helper functions for Separators
 async function getSeparator(channelId) {
@@ -94,6 +100,20 @@ async function removeAutoDelete(channelId) {
     await AutoDelete.deleteOne({ channel_id: channelId });
 }
 
+// Helper functions for Grant Permissions
+async function getGrantRoles() {
+    const doc = await GrantPerm.findOne({ key: 'default' });
+    return doc ? doc.role_ids : [];
+}
+
+async function setGrantRoles(roleIds) {
+    await GrantPerm.findOneAndUpdate(
+        { key: 'default' },
+        { role_ids: roleIds },
+        { upsert: true, new: true }
+    );
+}
+
 module.exports = {
     getSeparator,
     setSeparator,
@@ -105,5 +125,7 @@ module.exports = {
     getAutoDelete,
     getAllAutoDeletes,
     setAutoDelete,
-    removeAutoDelete
+    removeAutoDelete,
+    getGrantRoles,
+    setGrantRoles
 };

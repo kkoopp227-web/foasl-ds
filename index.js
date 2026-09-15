@@ -130,6 +130,31 @@ const commands = [
                 .setDescription('الصورة الخامسة (اختياري)')
                 .setRequired(false))
         .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
+
+    new SlashCommandBuilder()
+        .setName('grant-perms')
+        .setDescription('تحديد الرولات المسموح لها كتابة (صور / لايف)')
+        .addRoleOption(option =>
+            option.setName('role1')
+                .setDescription('الرول الأول')
+                .setRequired(false))
+        .addRoleOption(option =>
+            option.setName('role2')
+                .setDescription('الرول الثاني (اختياري)')
+                .setRequired(false))
+        .addRoleOption(option =>
+            option.setName('role3')
+                .setDescription('الرول الثالث (اختياري)')
+                .setRequired(false))
+        .addRoleOption(option =>
+            option.setName('role4')
+                .setDescription('الرول الرابع (اختياري)')
+                .setRequired(false))
+        .addRoleOption(option =>
+            option.setName('role5')
+                .setDescription('الرول الخامس (اختياري)')
+                .setRequired(false))
+        .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageChannels),
 ].map(c => c.toJSON());
 
 // ---------- Interactive panel state (key: user id) ----------
@@ -439,6 +464,31 @@ client.on('interactionCreate', async interaction => {
             } catch (error) {
                 console.error(error);
                 return interaction.reply({ content: `حدث خطأ أثناء الإرسال. تأكد أن البوت عنده صلاحية الكتابة في ${channel}`, ephemeral: true });
+            }
+        }
+
+        if (name === 'grant-perms') {
+            const roles = [];
+            for (let i = 1; i <= 5; i++) {
+                const r = interaction.options.getRole(`role${i}`);
+                if (r) roles.push(r.id);
+            }
+            try {
+                await db.setGrantRoles(roles);
+                if (roles.length === 0) {
+                    return interaction.reply({
+                        content: 'تم مسح الرولات المسموحة. الآن كتابة (صور / لايف) مسموحة فقط لرول الأدمن (ADMIN_ROLE_ID).',
+                        ephemeral: true
+                    });
+                }
+                return interaction.reply({
+                    content: `تم التحديد، الرولات المسموح لها كتابة (صور / لايف):\n` +
+                        roles.map(r => `<@&${r}>`).join(' '),
+                    ephemeral: true
+                });
+            } catch (error) {
+                console.error(error);
+                return interaction.reply({ content: 'حدث خطأ أثناء حفظ الإعدادات.', ephemeral: true });
             }
         }
 
@@ -768,6 +818,59 @@ client.on('messageCreate', async message => {
             `- \`${PREFIX}setup-separator\` → لوحة الفاصل (اختر الشاتات + الصورة + تشغيل)\n` +
             `- \`${PREFIX}send #الشات النص\` → يرسل نص وصور في شات (ارفق الصور بالترتيب مع الأمر)`
         );
+    }
+
+    // Role grant via "صور" / "لايف"
+    const tokens = message.content.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length > 0 && (tokens[0] === 'صور' || tokens[0] === 'لايف')) {
+        const allowedRoles = await db.getGrantRoles().catch(() => []);
+
+        let permitted;
+        if (allowedRoles.length === 0) {
+            permitted = hasAdminRole(message.member);
+        } else {
+            permitted = !!message.member && message.member.roles.cache.hasAny(...allowedRoles);
+        }
+
+        if (permitted) {
+            const word = tokens[0];
+            const roleId = word === 'صور' ? '1548148494198378497' : '1548148491145187328';
+
+            let targetUser = null;
+
+            if (message.reference && message.reference.messageId) {
+                try {
+                    const ref = await message.fetchReference();
+                    targetUser = ref.author;
+                } catch (err) { /* ignore */ }
+            }
+
+            if (!targetUser && message.mentions.users.size > 0) {
+                targetUser = message.mentions.users.first();
+            }
+
+            if (!targetUser) {
+                const idMatch = message.content.trim().match(/\b(\d{17,20})\b/);
+                if (idMatch) {
+                    try {
+                        targetUser = await client.users.fetch(idMatch[1]);
+                    } catch (err) { /* ignore */ }
+                }
+            }
+
+            if (!targetUser) {
+                return message.react('❌').catch(() => {});
+            }
+
+            try {
+                const member = await message.guild.members.fetch(targetUser.id);
+                await member.roles.add(roleId);
+                return message.react('✅').catch(() => {});
+            } catch (error) {
+                console.error('Role grant error:', error.message);
+                return message.react('❌').catch(() => {});
+            }
+        }
     }
 
     // Auto Reaction (runtime)
