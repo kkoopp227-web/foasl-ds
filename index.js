@@ -793,12 +793,12 @@ client.on('messageCreate', async message => {
             const isText = message.channel.isTextBased && message.channel.isTextBased();
 
             if (/^https?:\/\//i.test(url)) {
-                const embed = new EmbedBuilder()
-                    .setColor('#2b2d31')
-                    .setImage(url);
                 if (isText) {
-                    separatorMessage = await message.channel.send({ embeds: [embed] });
+                    separatorMessage = await message.channel.send({ files: [url] });
                 } else {
+                    const embed = new EmbedBuilder()
+                        .setColor('#2b2d31')
+                        .setImage(url);
                     separatorMessage = await client.rest.post(`/channels/${message.channel.id}/messages`, {
                         body: { embeds: [embed.toJSON()] }
                     });
